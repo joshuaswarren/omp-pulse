@@ -1,7 +1,7 @@
 import type { PulseConfig } from "./config.ts";
 import { statusLine } from "./chrome.ts";
 import { summarize, type PulseModelHost, type SmolComplete } from "./summarize.ts";
-import { echoesLatestAction, echoesUserRequest, extractiveSummary, isVagueStatus, recentTranscript } from "./transcript.ts";
+import { echoesLatestAction, echoesUserRequest, extractiveSummary, isRejectedStatus, isVagueStatus, recentTranscript } from "./transcript.ts";
 
 export type Phase = "idle" | "inTurn";
 
@@ -23,8 +23,17 @@ export type TickResult =
   | { action: "skip" }
   | { action: "paint"; line: string; fingerprint: string; source: "model" | "extract" };
 
+const RETRY_NOTE = [
+  "Rejected as vague.",
+  "State what is done, what is in flight, and what is next.",
+  "Do not answer Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, or Doing stuff.",
+  "Do not start with Yes, No, Sure, or Okay.",
+  "Do not stop mid-word, mid-phrase, or on a dash.",
+  "Do not give advice or restate draft content about the topic.",
+].join(" ");
+
 function unusable(text: string, entries: unknown): boolean {
-  return isVagueStatus(text) || echoesUserRequest(text, entries) || echoesLatestAction(text, entries);
+  return isVagueStatus(text) || isRejectedStatus(text) || echoesUserRequest(text, entries) || echoesLatestAction(text, entries);
 }
 
 export async function runTick(input: {
@@ -62,7 +71,7 @@ export async function runTick(input: {
       summary = { text: concrete, source: "extract" };
     } else {
       const retry = await summarize({
-        transcript: `${tail.text}\n\nRejected as vague. State what is done, what is in flight, and what is next. Do not answer Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, or Doing stuff.`,
+        transcript: `${tail.text}\n\n${RETRY_NOTE}`,
         fallback: "idle",
         provider: input.config.provider,
         host: input.host,

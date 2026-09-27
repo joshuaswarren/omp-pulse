@@ -17,7 +17,7 @@ The strip reads the session branch omp already keeps and asks omp's **smol** mod
 
 `surface: "both"` paints the same `pulse · …` line with `setWidget` and `setStatus`, so the strip shows up twice. That mode stays available for anyone who wants both chrome slots, and it is usually the wrong setting for a live smoke test. The default is `widget`, which leaves the native statusline for git, model, and context.
 
-On turn start the line is a local extract of progress since the latest user message: what is done, what is in flight, and what is next. It summarizes the turn, so a string of tool calls does not collapse to the last file or command. Vague lines with no object, such as "Running todo" or "Working", are discarded. A blocker still surfaces when the latest real step failed. That extract, and the tail sent to the model, leave out the opening user message, so the line does not restate the prompt. Smol rewrites it on the timer (default 7 minutes) and again when the turn ends, if that progress changed. `/pulse` refreshes on demand.
+On turn start the line is a local extract of progress since the latest user message: what is done, what is in flight, and what is next. It summarizes the turn, so a string of tool calls does not collapse to the last file or command. Vague lines with no object, such as "Running todo" or "Working", are discarded. So are lines that stop mid-word or mid-phrase, lines that answer with Yes, No, Sure, or Okay, and lines that paraphrase the topic (advice or draft content) instead of that progress rollup. A blocker still surfaces when the latest real step failed. That extract, and the tail sent to the model, leave out the opening user message, so the line does not restate the prompt. Smol rewrites it on the timer (default 7 minutes) and again when the turn ends, if that progress changed. `/pulse` refreshes on demand.
 
 The in-flight token stream is not on the branch until omp records the message. The strip summarizes persisted session messages, not a second queue.
 
@@ -37,7 +37,7 @@ Requires Node 20 or newer and omp with managed timers (`ctx.setInterval`, omp 18
 
 ## Config
 
-Optional file at `~/.omp/agent/omp-pulse/config.json`. Environment variables override the file. With neither, the extension resolves omp's **smol** role (`ctx.models.resolve("@smol")`, which reads `modelRoles.smol`) and completes through `@oh-my-pi/pi-ai`'s `completeSimple`. The API key comes from `ctx.modelRegistry.getApiKey`. If smol is unresolved, the call fails, or the line is empty or vague, the strip keeps the local extract.
+Optional file at `~/.omp/agent/omp-pulse/config.json`. Environment variables override the file. With neither, the extension resolves omp's **smol** role (`ctx.models.resolve("@smol")`, which reads `modelRoles.smol`) and completes through `@oh-my-pi/pi-ai`'s `completeSimple`. The API key comes from `ctx.modelRegistry.getApiKey`. If smol is unresolved, the call fails, or the line is empty, vague, truncated, an answer, or a topic paraphrase, the strip keeps the local extract.
 
 ```json
 {

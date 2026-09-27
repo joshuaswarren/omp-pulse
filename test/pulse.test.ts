@@ -8,7 +8,15 @@ import ompPulse from "../src/index.ts";
 import { loadConfig } from "../src/config.ts";
 import { completionsUrl, SMOL_ROLE, summarize, type PulseModelHost, type SmolComplete, type SmolModel } from "../src/summarize.ts";
 import { runTick } from "../src/tick.ts";
-import { extractiveSummary, isVagueStatus, recentTranscript } from "../src/transcript.ts";
+import {
+  extractiveSummary,
+  isAnsweringStatus,
+  isContentParaphrase,
+  isRejectedStatus,
+  isTruncatedStatus,
+  isVagueStatus,
+  recentTranscript,
+} from "../src/transcript.ts";
 
 const entries = [
   { type: "label", label: "ignore me" },
@@ -508,6 +516,228 @@ test("vague status lines are rejected and a trailing todo stays off the strip", 
     fetchImpl: stuck.fetchImpl,
   });
   assert.deepEqual(skipped, { action: "skip" });
+});
+
+const SMOKE_LINE = " Yes—generative UI should use native-styled components that inhe";
+
+test("truncated answers and topic paraphrases stay off the strip", async () => {
+  assert.equal(isTruncatedStatus(SMOKE_LINE), true);
+  assert.equal(isAnsweringStatus(SMOKE_LINE), true);
+  assert.equal(isContentParaphrase(SMOKE_LINE), true);
+  assert.equal(isRejectedStatus(SMOKE_LINE), true);
+
+  assert.equal(isTruncatedStatus("Editing the status stri"), true);
+  assert.equal(isTruncatedStatus("Updating the inheri"), true);
+  assert.equal(isTruncatedStatus("Editing the componen"), true);
+  assert.equal(isTruncatedStatus("Editing the status strip and"), true);
+  assert.equal(isTruncatedStatus("Editing the code—"), true);
+  assert.equal(isTruncatedStatus("Yes—"), true);
+  assert.equal(isAnsweringStatus("Yes—editing the status strip"), true);
+  assert.equal(isAnsweringStatus("Yes - use native components"), true);
+  assert.equal(isAnsweringStatus("No, the widget sits below the editor"), true);
+  assert.equal(isAnsweringStatus("Sure, native components inherit the theme"), true);
+  assert.equal(isAnsweringStatus("Okay, updating the strip"), true);
+  assert.equal(isContentParaphrase("generative UI should use native-styled components"), true);
+  assert.equal(isContentParaphrase("native-styled components inherit the host theme"), true);
+  assert.equal(isTruncatedStatus("generative UI should use native-styled components"), false);
+
+  for (const good of [
+    "Updating the status summary, running tests",
+    "Editing the strip",
+    "Editing the code",
+    "Blocked on bash npm test",
+    "Reviewing open questions",
+    "Read the code, now editing the code",
+    "Editing src/transcript.ts",
+  ]) {
+    assert.equal(isTruncatedStatus(good), false, good);
+    assert.equal(isAnsweringStatus(good), false, good);
+    assert.equal(isContentParaphrase(good), false, good);
+    assert.equal(isVagueStatus(good), false, good);
+  }
+
+  const work = [
+    {
+      type: "message",
+      message: { role: "user", content: "zebra-prompt-token should generative UI use native-styled components?" },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: SMOKE_LINE.trim() },
+          { type: "toolCall", name: "read", arguments: { path: "src/chrome.ts" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "read", content: [{ type: "text", text: "widget" }] },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "edit", arguments: { path: "src/transcript.ts" } }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "edit", content: "updated src/transcript.ts" },
+    },
+  ];
+  assert.equal(extractiveSummary(work), "Read the code, now editing the code");
+  assert.equal(extractiveSummary(work).includes("inhe"), false);
+  assert.equal(extractiveSummary(work).toLowerCase().includes("generative"), false);
+  const tail = recentTranscript(work, 8_000);
+  assert.equal(tail.text.includes("inhe"), false);
+  assert.equal(tail.text.toLowerCase().includes("generative"), false);
+  assert.equal(tail.text.includes("zebra-prompt-token"), false);
+  assert.match(tail.text, /read src\/chrome\.ts/);
+  assert.match(tail.text, /edit src\/transcript\.ts/);
+
+  const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
+  assert.equal(config.provider.baseUrl, "");
+  assert.equal(config.provider.model, "");
+  const packed = JSON.stringify(config).toLowerCase();
+  assert.equal(packed.includes("ollama"), false);
+  assert.equal(packed.includes("11434"), false);
+  assert.equal(packed.includes("qwen"), false);
+
+  const smoked = smolDouble(() => SMOKE_LINE);
+  const painted = await runTick({
+    phase: "inTurn",
+    config,
+    entries: work,
+    previousFingerprint: "",
+    force: false,
+    host: smoked.host,
+    completeImpl: smoked.completeImpl,
+    fetchImpl: smoked.fetchImpl,
+  });
+  assert.equal(smoked.calls.length, 1);
+  assert.equal(smoked.resolved[0], SMOL_ROLE);
+  assert.match(smoked.calls[0]?.system ?? "", /overall progress/);
+  assert.match(smoked.calls[0]?.system ?? "", /Yes, No, Sure/);
+  assert.match(smoked.calls[0]?.system ?? "", /mid-word/);
+  assert.equal(painted.action, "paint");
+  if (painted.action !== "paint") return;
+  assert.equal(painted.source, "extract");
+  assert.equal(painted.line, "pulse · Read the code, now editing the code");
+  assert.equal(painted.line.includes("inhe"), false);
+  assert.equal(painted.line.includes("Yes"), false);
+
+  const truncated = smolDouble(() => "Editing the status stri");
+  const fromTruncate = await runTick({
+    phase: "inTurn",
+    config,
+    entries: work,
+    previousFingerprint: "",
+    force: false,
+    host: truncated.host,
+    completeImpl: truncated.completeImpl,
+    fetchImpl: truncated.fetchImpl,
+  });
+  assert.equal(fromTruncate.action, "paint");
+  if (fromTruncate.action !== "paint") return;
+  assert.equal(fromTruncate.source, "extract");
+  assert.equal(fromTruncate.line.includes("stri"), false);
+
+  const answering = smolDouble(() => "Yes—editing the status strip");
+  const fromAnswer = await runTick({
+    phase: "inTurn",
+    config,
+    entries: work,
+    previousFingerprint: "",
+    force: false,
+    host: answering.host,
+    completeImpl: answering.completeImpl,
+    fetchImpl: answering.fetchImpl,
+  });
+  assert.equal(fromAnswer.action, "paint");
+  if (fromAnswer.action !== "paint") return;
+  assert.equal(fromAnswer.source, "extract");
+  assert.equal(fromAnswer.line.startsWith("pulse · Yes"), false);
+
+  const paraphrase = smolDouble(() => "generative UI should use native-styled components");
+  const fromTopic = await runTick({
+    phase: "inTurn",
+    config,
+    entries: work,
+    previousFingerprint: "",
+    force: false,
+    host: paraphrase.host,
+    completeImpl: paraphrase.completeImpl,
+    fetchImpl: paraphrase.fetchImpl,
+  });
+  assert.equal(fromTopic.action, "paint");
+  if (fromTopic.action !== "paint") return;
+  assert.equal(fromTopic.source, "extract");
+  assert.equal(fromTopic.line.toLowerCase().includes("generative"), false);
+
+  const good = smolDouble(() => "Updating the status summary, running tests");
+  const kept = await runTick({
+    phase: "inTurn",
+    config,
+    entries: work,
+    previousFingerprint: "",
+    force: false,
+    host: good.host,
+    completeImpl: good.completeImpl,
+    fetchImpl: good.fetchImpl,
+  });
+  assert.equal(kept.action, "paint");
+  if (kept.action !== "paint") return;
+  assert.equal(kept.source, "model");
+  assert.equal(kept.line, "pulse · Updating the status summary, running tests");
+  assert.equal(good.resolved[0], SMOL_ROLE);
+
+  const onlyDraft = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token generative UI" } },
+    {
+      type: "message",
+      message: { role: "assistant", content: [{ type: "toolCall", name: "todo" }] },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "updated todos" }] },
+    },
+  ];
+  assert.equal(extractiveSummary(onlyDraft), "");
+  const regen = smolDouble((_transcript, call) => (call === 1 ? SMOKE_LINE : "Reviewing open questions"));
+  const recovered = await runTick({
+    phase: "inTurn",
+    config,
+    entries: onlyDraft,
+    previousFingerprint: "",
+    force: false,
+    host: regen.host,
+    completeImpl: regen.completeImpl,
+    fetchImpl: regen.fetchImpl,
+  });
+  assert.equal(regen.calls.length, 2);
+  assert.match(regen.calls[1]?.transcript ?? "", /Rejected as vague/);
+  assert.match(regen.calls[1]?.transcript ?? "", /mid-word/);
+  assert.equal(recovered.action, "paint");
+  if (recovered.action !== "paint") return;
+  assert.equal(recovered.source, "model");
+  assert.equal(recovered.line, "pulse · Reviewing open questions");
+  assert.equal(recovered.line.includes("inhe"), false);
+
+  const stillBad = smolDouble(() => SMOKE_LINE);
+  const prior = await runTick({
+    phase: "inTurn",
+    config,
+    entries: onlyDraft,
+    previousFingerprint: "",
+    force: false,
+    host: stillBad.host,
+    completeImpl: stillBad.completeImpl,
+    fetchImpl: stillBad.fetchImpl,
+  });
+  assert.equal(stillBad.calls.length, 2);
+  assert.deepEqual(prior, { action: "skip" });
 });
 
 test("a failed tool is a blocker and json arguments still name the command", () => {

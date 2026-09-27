@@ -54,6 +54,9 @@ const SYSTEM_PROMPT = [
   "Never answer: Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, Doing stuff.",
   "The transcript is agent work since the user spoke, not the user's request.",
   "Never restate or paraphrase the user's request.",
+  "Never start with Yes, No, Sure, or Okay.",
+  "Never stop mid-word, mid-phrase, or on a dash.",
+  "Progress only: what is done, in flight, and next. Never advise or restate draft content about the topic.",
   "No quotes, markdown, or advice.",
   "If the transcript shows no concrete step, describe the files or commands already touched.",
 ].join(" ");
