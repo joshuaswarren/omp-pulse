@@ -1,0 +1,51 @@
+name: Publish to npm
+
+# Primary trigger is a v* tag push. A published GitHub Release runs the same job.
+# Auth is GitHub Actions OIDC (npm Trusted Publishing).
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Require tag to match package.json version
+        run: |
+          pkg_version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${pkg_version}."
+            exit 1
+          fi
+
+      - name: Publish
+        run: npm publish --access public
