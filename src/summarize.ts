@@ -1,5 +1,5 @@
 import type { ProviderConfig } from "./config.ts";
-import { limitWords } from "./text.ts";
+import { limitWords, PREFERRED_BODY_CHARS } from "./text.ts";
 
 /** omp model role for the cheap one-line rewrite. `ctx.models.resolve` expands `modelRoles.smol`. */
 export const SMOL_ROLE = "@smol";
@@ -45,23 +45,25 @@ export type Summary = {
   source: "model" | "extract";
 };
 
-const SYSTEM_PROMPT = [
-  "Write one status line for the agent's overall progress this turn.",
-  "Present tense. At most 12 words and 52 characters.",
-  "The painted strip is pulse, a dot, and this line, and must stay within 60 characters.",
-  "No ellipsis. Never end with three dots.",
-  "Roll up the entire current turn: the goal, the phase, what is done, what is in flight, and what comes next.",
-  "Summarize across the whole turn. Do not report only the latest decision, the latest assistant sentence, the latest tool, file, or command.",
-  "Name a concrete object. Never answer with a bare status verb or a tool name alone.",
-  "Never answer: Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, Doing stuff.",
-  "The transcript is agent work since the user spoke, not the user's request.",
-  "Never restate or paraphrase the user's request.",
-  "Never start with Yes, No, Sure, or Okay.",
-  "Never stop mid-word, mid-phrase, or on a dash.",
-  "Progress only: what is done, in flight, and next. Never advise or restate draft content about the topic.",
-  "No quotes, markdown, or advice.",
-  "If the transcript shows no concrete step, describe the files or commands already touched.",
-].join(" ");
+function systemPrompt(bodyChars: number): string {
+  return [
+    "Write one status line for the agent's overall progress this turn.",
+    `Present tense. At most 12 words and ${bodyChars} characters.`,
+    "The painted strip is pulse, a dot, and this line, and must stay within 60 characters.",
+    "No ellipsis. Never end with three dots.",
+    "Roll up the entire current turn: the goal, the phase, what is done, what is in flight, and what comes next.",
+    "Summarize across the whole turn. Do not report only the latest decision, the latest assistant sentence, the latest tool, file, or command.",
+    "Name a concrete object. Never answer with a bare status verb or a tool name alone.",
+    "Never answer: Running checks, Running tests, Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, Doing stuff.",
+    "The transcript is agent work since the user spoke, not the user's request.",
+    "Never restate or paraphrase the user's request.",
+    "Never start with Yes, No, Sure, or Okay.",
+    "Never stop mid-word, mid-phrase, or on a dash.",
+    "Progress only: what is done, in flight, and next. Never advise or restate draft content about the topic.",
+    "No quotes, markdown, or advice.",
+    "If the transcript shows no concrete step, describe the files or commands already touched.",
+  ].join(" ");
+}
 
 export async function summarize(input: {
   transcript: string;
@@ -70,10 +72,13 @@ export async function summarize(input: {
   host?: PulseModelHost;
   fetchImpl?: typeof fetch;
   completeImpl?: SmolComplete;
+  /** Body budget inside the 60-character strip. Shrinks when the version tell is painted. */
+  bodyChars?: number;
 }): Promise<Summary> {
   const fallback = input.fallback.trim() || "idle";
+  const bodyChars = input.bodyChars ?? PREFERRED_BODY_CHARS;
   if (!input.transcript.trim()) return { text: fallback, source: "extract" };
-  if (input.provider.baseUrl === "") return summarizeWithSmol(input, fallback);
+  if (input.provider.baseUrl === "") return summarizeWithSmol(input, fallback, bodyChars);
   const url = completionsUrl(input.provider.baseUrl);
   if (!url || input.provider.model === "") return { text: fallback, source: "extract" };
 
@@ -89,7 +94,7 @@ export async function summarize(input: {
         temperature: 0,
         max_tokens: 60,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: systemPrompt(bodyChars) },
           { role: "user", content: input.transcript },
         ],
       }),
@@ -113,6 +118,7 @@ async function summarizeWithSmol(
     completeImpl?: SmolComplete;
   },
   fallback: string,
+  bodyChars: number,
 ): Promise<Summary> {
   const resolve = input.host?.models?.resolve;
   const registry = input.host?.modelRegistry;
@@ -127,7 +133,7 @@ async function summarizeWithSmol(
     const response = await complete(
       model,
       {
-        systemPrompt: [SYSTEM_PROMPT],
+        systemPrompt: [systemPrompt(bodyChars)],
         messages: [{ role: "user", content: input.transcript, timestamp: Date.now() }],
       },
       {

@@ -1,5 +1,5 @@
 import type { PulseConfig } from "./config.ts";
-import { isTooLongForStrip, statusLine } from "./chrome.ts";
+import { isTooLongForStrip, preferredBodyBudget, statusLine, type StripOptions } from "./chrome.ts";
 import { summarize, type PulseModelHost, type SmolComplete } from "./summarize.ts";
 import { echoesLatestAction, echoesLatestClause, echoesUserRequest, extractiveSummary, isRejectedStatus, isVagueStatus, recentTranscript } from "./transcript.ts";
 
@@ -23,26 +23,28 @@ export type TickResult =
   | { action: "skip" }
   | { action: "paint"; line: string; fingerprint: string; source: "model" | "extract" };
 
-const RETRY_NOTE = [
-  "Rejected as vague.",
-  "State what is done, what is in flight, and what is next.",
-  "Do not answer Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, or Doing stuff.",
-  "Do not start with Yes, No, Sure, or Okay.",
-  "Do not stop mid-word, mid-phrase, or on a dash.",
-  "Do not give advice or restate draft content about the topic.",
-  "Do not repeat only the latest decision or the latest assistant sentence.",
-  "Roll up the whole turn: goal, phase, done, in flight, and next.",
-  "Shorter: at most 52 characters. No ellipsis.",
-].join(" ");
+function retryNote(bodyChars: number): string {
+  return [
+    "Rejected as vague.",
+    "State what is done, what is in flight, and what is next.",
+    "Do not answer Running checks, Running tests, Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, or Doing stuff.",
+    "Do not start with Yes, No, Sure, or Okay.",
+    "Do not stop mid-word, mid-phrase, or on a dash.",
+    "Do not give advice or restate draft content about the topic.",
+    "Do not repeat only the latest decision or the latest assistant sentence.",
+    "Roll up the whole turn: goal, phase, done, in flight, and next.",
+    `Shorter: at most ${bodyChars} characters. No ellipsis.`,
+  ].join(" ");
+}
 
-function unusable(text: string, entries: unknown): boolean {
+function unusable(text: string, entries: unknown, strip: StripOptions): boolean {
   return (
     isVagueStatus(text) ||
     isRejectedStatus(text) ||
     echoesUserRequest(text, entries) ||
     echoesLatestAction(text, entries) ||
     echoesLatestClause(text, entries) ||
-    isTooLongForStrip(text)
+    isTooLongForStrip(text, strip)
   );
 }
 
@@ -66,6 +68,8 @@ export async function runTick(input: {
   });
   if (decision === "skip") return { action: "skip" };
 
+  const strip: StripOptions = { showVersion: input.config.showVersion };
+  const bodyChars = preferredBodyBudget(strip);
   const extracted = extractiveSummary(input.entries);
   const concrete = extracted && !isVagueStatus(extracted) ? extracted : "";
   let summary = await summarize({
@@ -75,21 +79,23 @@ export async function runTick(input: {
     host: input.host,
     fetchImpl: input.fetchImpl,
     completeImpl: input.completeImpl,
+    bodyChars,
   });
-  if (summary.source === "model" && unusable(summary.text, input.entries)) {
+  if (summary.source === "model" && unusable(summary.text, input.entries, strip)) {
     if (concrete) {
       summary = { text: concrete, source: "extract" };
     } else {
       const retry = await summarize({
-        transcript: `${tail.text}\n\n${RETRY_NOTE}`,
+        transcript: `${tail.text}\n\n${retryNote(bodyChars)}`,
         fallback: "idle",
         provider: input.config.provider,
         host: input.host,
         fetchImpl: input.fetchImpl,
         completeImpl: input.completeImpl,
+        bodyChars,
       });
       summary =
-        retry.source === "model" && !unusable(retry.text, input.entries)
+        retry.source === "model" && !unusable(retry.text, input.entries, strip)
           ? retry
           : { text: "", source: "extract" };
     }
@@ -103,7 +109,7 @@ export async function runTick(input: {
   }
   return {
     action: "paint",
-    line: statusLine(summary.text),
+    line: statusLine(summary.text, strip),
     fingerprint: summary.source === "model" ? tail.fingerprint : input.previousFingerprint,
     source: summary.source,
   };

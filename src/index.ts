@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { paint, STATUS_KEY, statusLine, type ChromeUi } from "./chrome.ts";
+import { paint, pulseNotice, STATUS_KEY, statusLine, type ChromeUi } from "./chrome.ts";
 import { DEFAULT_CONFIG_PATH, loadConfig, type PulseConfig } from "./config.ts";
 import { type PulseModelHost } from "./summarize.ts";
 import { extractiveSummary, isVagueStatus } from "./transcript.ts";
@@ -44,7 +44,8 @@ export default function ompPulse(pi: PiApi): void {
   let queued = false;
   let queuedForce = false;
   let loop: Promise<void> | null = null;
-  let lastLine = statusLine("idle");
+  const strip = { showVersion: config.showVersion };
+  let lastLine = statusLine("idle", strip);
 
   function readEntries(): unknown {
     try {
@@ -59,7 +60,7 @@ export default function ompPulse(pi: PiApi): void {
     const extracted = extractiveSummary(readEntries());
     const body = extracted && !isVagueStatus(extracted) ? extracted : emptyBody;
     if (!body || isVagueStatus(body)) return;
-    lastLine = statusLine(body);
+    lastLine = statusLine(body, strip);
     paint(host.ui, config, lastLine);
   }
 
@@ -172,7 +173,7 @@ export default function ompPulse(pi: PiApi): void {
     handler: async (_args, ctx) => {
       host = ctx;
       await refresh(true);
-      ctx.ui.notify?.(lastLine, "info");
+      ctx.ui.notify?.(pulseNotice(lastLine), "info");
     },
   });
 }
