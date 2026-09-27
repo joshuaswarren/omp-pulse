@@ -1,0 +1,42 @@
+{
+  "name": "omp-pulse",
+  "version": "0.1.0",
+  "description": "Mid-turn one-line transcript status strip for omp. Refreshes on a timer without joining the live agent turn.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "omp"
+  ],
+  "license": "MIT",
+  "author": "Joshua Warren",
+  "homepage": "https://github.com/joshuaswarren/omp-pulse",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joshuaswarren/omp-pulse.git"
+  },
+  "bugs": {
+    "url": "https://github.com/joshuaswarren/omp-pulse/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.3"
+  }
+}
