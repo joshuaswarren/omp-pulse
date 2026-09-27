@@ -7,7 +7,7 @@ import { paint, STATUS_KEY, statusLine } from "../src/chrome.ts";
 import { loadConfig } from "../src/config.ts";
 import { completionsUrl, summarize } from "../src/summarize.ts";
 import { runTick } from "../src/tick.ts";
-import { extractiveSummary, recentTranscript } from "../src/transcript.ts";
+import { extractiveSummary, isVagueStatus, recentTranscript } from "../src/transcript.ts";
 
 const entries = [
   { type: "label", label: "ignore me" },
@@ -329,6 +329,141 @@ test("a turn with many tools summarizes progress, not the last tool", async () =
   assert.equal(kept.line, "pulse · Updating the status summary, running tests");
 });
 
+test("vague status lines are rejected and a trailing todo stays off the strip", async () => {
+  for (const line of [
+    "Running todo",
+    "Working",
+    "Processing",
+    "Thinking",
+    "Updating",
+    "Busy",
+    "Loading",
+    "In progress",
+    "Doing stuff",
+    "Running todowrite",
+    "Doing things",
+  ]) {
+    assert.equal(isVagueStatus(line), true, line);
+  }
+  assert.equal(isVagueStatus("Updating the status summary, editing the code"), false);
+  assert.equal(isVagueStatus("Editing src/transcript.ts"), false);
+  assert.equal(isVagueStatus("Blocked on bash npm test"), false);
+
+  const turn = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token ship a high-level status strip" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Updating the status summary." },
+          { type: "toolCall", name: "read", arguments: { path: "src/summarize.ts" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "read", content: [{ type: "text", text: "prompt text" }] },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "edit", arguments: { path: "src/transcript.ts" } }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "edit", content: "updated src/transcript.ts" },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Running todo" }, { type: "toolCall", name: "todo" }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "updated todos" }] },
+    },
+  ];
+  assert.equal(extractiveSummary(turn), "Updating the status summary, editing the code");
+  assert.equal(extractiveSummary(turn).toLowerCase().includes("todo"), false);
+  assert.equal(extractiveSummary(turn).includes("zebra-prompt-token"), false);
+
+  const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
+  let calls = 0;
+  const echoed: typeof fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "Running todo" } }] }), { status: 200 });
+  };
+  const painted = await runTick({
+    phase: "inTurn",
+    config,
+    entries: turn,
+    previousFingerprint: "",
+    force: false,
+    fetchImpl: echoed,
+  });
+  assert.equal(calls, 1);
+  assert.equal(painted.action, "paint");
+  if (painted.action !== "paint") return;
+  assert.equal(painted.source, "extract");
+  assert.equal(painted.line, "pulse · Updating the status summary, editing the code");
+  assert.equal(painted.line.toLowerCase().includes("running todo"), false);
+
+  const onlyTodo = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token ship the widget" } },
+    {
+      type: "message",
+      message: { role: "assistant", content: [{ type: "toolCall", name: "todo" }] },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "updated todos" }] },
+    },
+  ];
+  assert.equal(extractiveSummary(onlyTodo), "");
+  let retries = 0;
+  let retryNote = "";
+  const regen: typeof fetch = async (_url, init) => {
+    retries += 1;
+    const body = JSON.parse(String(init?.body)) as { messages?: { content?: string }[] };
+    const transcript = body.messages?.[1]?.content ?? "";
+    if (retries === 2) retryNote = transcript;
+    const content = retries === 1 ? "Doing stuff" : "Reviewing open questions";
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+  };
+  const recovered = await runTick({
+    phase: "inTurn",
+    config,
+    entries: onlyTodo,
+    previousFingerprint: "",
+    force: false,
+    fetchImpl: regen,
+  });
+  assert.equal(retries, 2);
+  assert.match(retryNote, /Rejected as vague/);
+  assert.equal(recovered.action, "paint");
+  if (recovered.action !== "paint") return;
+  assert.equal(recovered.source, "model");
+  assert.equal(recovered.line, "pulse · Reviewing open questions");
+  assert.equal(recovered.line.includes("zebra-prompt-token"), false);
+
+  const stuck: typeof fetch = async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: "Working" } }] }), { status: 200 });
+  const skipped = await runTick({
+    phase: "inTurn",
+    config,
+    entries: onlyTodo,
+    previousFingerprint: "",
+    force: false,
+    fetchImpl: stuck,
+  });
+  assert.deepEqual(skipped, { action: "skip" });
+});
+
 test("a failed tool is a blocker and json arguments still name the command", () => {
   const failed = [
     { type: "message", message: { role: "user", content: "zebra-prompt-token run the tests" } },
@@ -467,6 +602,7 @@ test("summarize posts one chat completion and returns the model line", async () 
   assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /overall progress/);
   assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /latest tool/);
   assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /Never restate or paraphrase/);
+  assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /Running todo/);
   assert.equal(JSON.stringify(seen[0]?.body).includes("secret-key"), false);
 });
 

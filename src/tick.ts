@@ -1,7 +1,7 @@
 import type { PulseConfig } from "./config.ts";
 import { statusLine } from "./chrome.ts";
 import { summarize } from "./summarize.ts";
-import { echoesLatestAction, echoesUserRequest, extractiveSummary, recentTranscript } from "./transcript.ts";
+import { echoesLatestAction, echoesUserRequest, extractiveSummary, isVagueStatus, recentTranscript } from "./transcript.ts";
 
 export type Phase = "idle" | "inTurn";
 
@@ -23,6 +23,10 @@ export type TickResult =
   | { action: "skip" }
   | { action: "paint"; line: string; fingerprint: string; source: "model" | "extract" };
 
+function unusable(text: string, entries: unknown): boolean {
+  return isVagueStatus(text) || echoesUserRequest(text, entries) || echoesLatestAction(text, entries);
+}
+
 export async function runTick(input: {
   phase: Phase;
   config: PulseConfig;
@@ -41,18 +45,36 @@ export async function runTick(input: {
   });
   if (decision === "skip") return { action: "skip" };
 
-  const fallback = extractiveSummary(input.entries) || (input.phase === "inTurn" ? "working" : "idle");
+  const extracted = extractiveSummary(input.entries);
+  const concrete = extracted && !isVagueStatus(extracted) ? extracted : "";
   let summary = await summarize({
     transcript: tail.text,
-    fallback,
+    fallback: concrete || "idle",
     provider: input.config.provider,
     fetchImpl: input.fetchImpl,
   });
-  if (
-    summary.source === "model" &&
-    (echoesUserRequest(summary.text, input.entries) || echoesLatestAction(summary.text, input.entries))
-  ) {
-    summary = { text: fallback, source: "extract" };
+  if (summary.source === "model" && unusable(summary.text, input.entries)) {
+    if (concrete) {
+      summary = { text: concrete, source: "extract" };
+    } else {
+      const retry = await summarize({
+        transcript: `${tail.text}\n\nRejected as vague. State what is done, what is in flight, and what is next. Do not answer Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, or Doing stuff.`,
+        fallback: "idle",
+        provider: input.config.provider,
+        fetchImpl: input.fetchImpl,
+      });
+      summary =
+        retry.source === "model" && !unusable(retry.text, input.entries)
+          ? retry
+          : { text: "", source: "extract" };
+    }
+  } else if (summary.source === "extract" && !concrete && input.phase === "inTurn") {
+    summary = { text: "", source: "extract" };
+  }
+  if (!summary.text || isVagueStatus(summary.text)) {
+    if (concrete) summary = { text: concrete, source: "extract" };
+    else if (input.phase === "idle") summary = { text: "idle", source: "extract" };
+    else return { action: "skip" };
   }
   return {
     action: "paint",

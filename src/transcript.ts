@@ -57,9 +57,59 @@ const STATUS_FILLER = new Set([
   "code", "file", "files", "checks", "tests", "test", "now", "step",
 ]);
 
+const VAGUE_LINES = new Set([
+  "running todo",
+  "running todos",
+  "running todowrite",
+  "running task",
+  "running tasks",
+  "working",
+  "processing",
+  "thinking",
+  "updating",
+  "busy",
+  "loading",
+  "in progress",
+  "doing stuff",
+  "doing things",
+  "working on it",
+  "still working",
+  "still thinking",
+  "making progress",
+]);
+
+const BARE_STATUS = new Set([
+  "running", "working", "processing", "thinking", "updating", "busy", "loading",
+  "doing", "handling", "starting", "finishing", "waiting", "editing", "reading",
+  "searching", "writing", "fixing", "checking", "reviewing", "pondering",
+  "todo", "todos", "todowrite", "todoread", "task", "tasks", "tool", "tools",
+  "stuff", "thing", "things", "work", "progress", "request", "item", "items",
+  "step", "steps", "something", "anything", "update", "updates", "info",
+  "still", "currently", "just", "now", "again", "really", "actually", "simply",
+  "hard", "please", "wait", "moment", "around", "through", "onto",
+]);
+
+const BOOKKEEPING = new Set([
+  "todo", "todos", "todowrite", "todoread", "updatetodos", "task", "tasks",
+  "taskcreate", "taskupdate", "tasklist", "taskwrite",
+]);
+
+export function isVagueStatus(text: string): boolean {
+  const norm = normalize(text);
+  if (!norm || VAGUE_LINES.has(norm)) return true;
+  const words = norm.split(" ").filter((word) => word.length >= 3 && !STOP.has(word));
+  if (words.length === 0) return true;
+  return words.every((word) => BARE_STATUS.has(word));
+}
+
 export function extractiveSummary(entries: unknown): string {
+  const line = progressSummary(entries);
+  return line && !isVagueStatus(line) ? line : "";
+}
+
+function progressSummary(entries: unknown): string {
   const { users, items } = progressOf(entries);
-  const actions = actionsOf(items);
+  const actions = concreteActions(actionsOf(items));
   const last = actions[actions.length - 1];
   if (last && !last.ok) return describeTool({ kind: "tool", name: last.name, target: last.target, ok: false, detail: "" });
 
@@ -72,7 +122,10 @@ export function extractiveSummary(entries: unknown): string {
   if (verbs.length === 1) {
     const line = prose[prose.length - 1];
     if (line) return clipWords(line, 12);
-    if (actions.length === 1 && last) return describeCall(last);
+    if (actions.length === 1 && last) {
+      const described = describeCall(last);
+      if (described) return described;
+    }
     return phaseLabel(verbs[0] ?? "Running");
   }
 
@@ -90,7 +143,7 @@ export function echoesUserRequest(text: string, entries: unknown): boolean {
 }
 
 export function echoesLatestAction(text: string, entries: unknown): boolean {
-  const actions = actionsOf(progressOf(entries).items);
+  const actions = concreteActions(actionsOf(progressOf(entries).items));
   if (actions.length < 2) return false;
   const last = actions[actions.length - 1];
   if (!last) return false;
@@ -110,6 +163,16 @@ export function echoesLatestAction(text: string, entries: unknown): boolean {
     .split(" ")
     .filter((word) => word.length >= 3 && !STOP.has(word) && !STATUS_FILLER.has(word));
   return leftover.length === 0;
+}
+
+function concreteActions(actions: Action[]): Action[] {
+  return actions.filter((action) => !isBookkeeping(action));
+}
+
+function isBookkeeping(action: Action): boolean {
+  const name = action.name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (!BOOKKEEPING.has(name) && !name.includes("todo")) return false;
+  return !action.target.includes("/") && !/\.[a-z0-9]{1,8}$/i.test(action.target);
 }
 
 function actionsOf(items: Array<Exclude<Item, { kind: "user" }>>): Action[] {
@@ -154,7 +217,7 @@ function usefulProse(
   for (const item of items) {
     if (item.kind !== "assistant" || !item.prose) continue;
     const clean = cleanProse(item.prose);
-    if (!clean || isParaphraseOfAny(clean, users) || isToolEcho(clean, actions)) continue;
+    if (!clean || isParaphraseOfAny(clean, users) || isToolEcho(clean, actions) || isVagueStatus(clean)) continue;
     found.push(clean);
   }
   return found;
@@ -208,7 +271,7 @@ function phaseLabel(verb: string): string {
   if (verb === "Reading") return "Reading the code";
   if (verb === "Searching") return "Searching the code";
   if (verb === "Running") return "Running checks";
-  return "Working through the task";
+  return "Continuing the change";
 }
 
 function nowClause(verb: string, action: Action | undefined): string {
@@ -223,7 +286,7 @@ function nowClause(verb: string, action: Action | undefined): string {
   if (verb === "Editing") return "editing the code";
   if (verb === "Reading") return "reading the code";
   if (verb === "Searching") return "searching the code";
-  return "working";
+  return "continuing the change";
 }
 
 function doneClause(verbs: string[]): string {
@@ -234,7 +297,7 @@ function doneClause(verbs: string[]): string {
   if (review) return "Read the code";
   if (kinds.has("Editing")) return "Updated the code";
   if (kinds.has("Running")) return "Ran checks";
-  return "Worked through the task";
+  return "Continued the change";
 }
 
 function progressOf(entries: unknown): { users: string[]; items: Array<Exclude<Item, { kind: "user" }>> } {
@@ -375,7 +438,7 @@ function describeTool(item: Extract<Item, { kind: "tool" }>): string {
 function describeCall(call: ToolRef): string {
   const verb = verbFor(call.name);
   if (call.target) return clipWords(`${verb} ${call.target}`, 12);
-  if (verb === "Running") return clipWords(`Running ${call.name}`, 12);
+  if (verb === "Running") return "";
   return clipWords(`${verb} with ${call.name}`, 12);
 }
 
