@@ -2,19 +2,20 @@
 
 One line of transcript status in the [omp](https://github.com/can1357/oh-my-pi) TUI, refreshed on a timer while a turn is running.
 
-The strip reads the session branch omp already keeps and asks a cheap model for a single line. It paints that line with `setStatus` and `setWidget`. It does not send a prompt, steer, follow-up, or aside into the live turn.
+The strip reads the session branch omp already keeps and asks a cheap model for a single line. By default it paints that line once, with `setWidget` (`belowEditor`). It does not send a prompt, steer, follow-up, or aside into the live turn.
 
 ```
 +--------------------------------------------------------------+
 |  editor                                                      |
 +--------------------------------------------------------------+
-| pulse · editing the status strip                             |  widget, belowEditor
+| pulse · editing the status strip                             |  widget, belowEditor (default)
 | git · model · ctx                                            |  native statusline
-| pulse · editing the status strip                             |  setStatus
 +--------------------------------------------------------------+
 ```
 
 `belowEditor` sits above omp's native statusline. A slot under that statusline is still open upstream ([oh-my-pi #11100](https://github.com/can1357/oh-my-pi/issues/11100)). `setFooter` and `setHeader` are no-ops ([oh-my-pi #13473](https://github.com/can1357/oh-my-pi/issues/13473)), so this extension does not call them.
+
+`surface: "both"` paints the same `pulse · …` line with `setWidget` and `setStatus`, so the strip shows up twice. That mode stays available for anyone who wants both chrome slots, and it is usually the wrong setting for a live smoke test. The default is `widget`, which leaves the native statusline for git, model, and context.
 
 On turn start the line is a local extract of the latest user and assistant text, so the strip is not blank for the whole interval. The cheap model rewrites it on the timer (default 7 minutes) and again when the turn ends, if the transcript changed. `/pulse` refreshes on demand.
 
@@ -42,7 +43,7 @@ Optional file at `~/.omp/agent/omp-pulse/config.json`. Environment variables ove
 {
   "intervalMs": 420000,
   "refreshWhileIdle": false,
-  "surface": "both",
+  "surface": "widget",
   "placement": "belowEditor",
   "maxTranscriptChars": 8000,
   "provider": {
@@ -58,7 +59,7 @@ Optional file at `~/.omp/agent/omp-pulse/config.json`. Environment variables ove
 | --- | --- | --- |
 | `intervalMs` | `420000` (7 min) | Model refresh while a turn is running. Clamped to 1 to 30 minutes. Use 300000 to 600000 for the 5 to 10 minute range. |
 | `refreshWhileIdle` | `false` | Also run the model refresh when no turn is active, if the transcript changed. |
-| `surface` | `both` | `status` (`setStatus` only), `widget` (`setWidget` only), or `both`. |
+| `surface` | `widget` | `widget` (`setWidget` only; default), `status` (`setStatus` only), or `both` (same line in both slots, so the strip appears twice; usually wrong for smoke). |
 | `placement` | `belowEditor` | `aboveEditor` or `belowEditor`. |
 | `maxTranscriptChars` | `8000` | Tail of the branch sent to the model. |
 | `provider.baseUrl` | `http://127.0.0.1:11434/v1` | OpenAI-compatible base URL. The extension POSTs `{baseUrl}/chat/completions`. |

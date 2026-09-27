@@ -86,9 +86,9 @@ function boolFrom(envValue: string | undefined, fileValue: unknown, fallback: bo
 }
 
 function surfaceFrom(envValue: string | undefined, fileValue: unknown): Surface {
-  const token = stringFrom(envValue, fileValue, "both");
+  const token = stringFrom(envValue, fileValue, "widget");
   if (token === "status" || token === "widget" || token === "both") return token;
-  return "both";
+  return "widget";
 }
 
 function placementFrom(envValue: string | undefined, fileValue: unknown): Placement {

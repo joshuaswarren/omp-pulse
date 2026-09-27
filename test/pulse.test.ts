@@ -73,7 +73,7 @@ test("missing config uses the local model and a 7 minute interval", () => {
   const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
   assert.equal(config.intervalMs, 420_000);
   assert.equal(config.refreshWhileIdle, false);
-  assert.equal(config.surface, "both");
+  assert.equal(config.surface, "widget");
   assert.equal(config.placement, "belowEditor");
   assert.equal(config.provider.baseUrl, "http://127.0.0.1:11434/v1");
   assert.equal(config.provider.model, "qwen2.5:0.5b");
@@ -112,6 +112,21 @@ test("env overrides the config file and bad values clamp", () => {
     assert.equal(config.provider.baseUrl, "http://fleet.internal:8000/v1");
     assert.equal(config.provider.model, "qwen2.5-0.5b");
     assert.equal(config.provider.apiKey, "fleet-key");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("surface both stays available and an unknown surface falls back to widget", () => {
+  const dir = mkdtempSync(join(tmpdir(), "omp-pulse-"));
+  const configPath = join(dir, "config.json");
+  try {
+    writeFileSync(configPath, JSON.stringify({ surface: "both" }));
+    assert.equal(loadConfig({ configPath, env: {} }).surface, "both");
+    assert.equal(loadConfig({ configPath, env: { OMP_PULSE_SURFACE: "widget" } }).surface, "widget");
+
+    writeFileSync(configPath, JSON.stringify({ surface: "footer" }));
+    assert.equal(loadConfig({ configPath, env: {} }).surface, "widget");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -253,24 +268,28 @@ test("an in-turn tick paints the model line and an idle tick does not call the m
   assert.equal(calls, 3);
 });
 
-test("paint writes status and a below-editor widget, and leaves footer and header alone", () => {
-  let status: { key: string; text: string | undefined } | undefined;
-  let widget: { key: string; placement?: string; lines: string[] } | undefined;
+type WidgetContent =
+  | string[]
+  | undefined
+  | ((tui: unknown, theme: { fg?: (token: string, text: string) => string }) => { render: () => string[] });
+
+function recordingUi() {
+  const status: { key: string; text: string | undefined }[] = [];
+  const widgets: { key: string; content: WidgetContent; placement?: string; lines?: string[] }[] = [];
   const ui = {
     setStatus(key: string, text: string | undefined) {
-      status = { key, text };
+      status.push({ key, text });
     },
     setWidget(
       key: string,
-      content: ((tui: unknown, theme: { fg?: (token: string, text: string) => string }) => { render: () => string[] }) | string[] | undefined,
+      content: WidgetContent,
       options?: { placement?: "aboveEditor" | "belowEditor" },
     ) {
-      if (typeof content !== "function") throw new Error(`expected a widget factory, got ${String(content)}`);
-      widget = {
-        key,
-        placement: options?.placement,
-        lines: content(null, { fg: (token, text) => `{${token}}${text}` }).render(),
-      };
+      const lines =
+        typeof content === "function"
+          ? content(null, { fg: (token, text) => `{${token}}${text}` }).render()
+          : undefined;
+      widgets.push({ key, content, placement: options?.placement, lines });
     },
     setFooter() {
       throw new Error("setFooter called");
@@ -279,14 +298,39 @@ test("paint writes status and a below-editor widget, and leaves footer and heade
       throw new Error("setHeader called");
     },
   };
+  return { ui, status, widgets };
+}
+
+test("paint writes status and a below-editor widget, and leaves footer and header alone", () => {
+  const { ui, status, widgets } = recordingUi();
 
   paint(ui, { surface: "both", placement: "belowEditor" }, "pulse · editing the strip");
-  assert.deepEqual(status, { key: STATUS_KEY, text: "pulse · editing the strip" });
-  assert.deepEqual(widget, {
-    key: STATUS_KEY,
-    placement: "belowEditor",
-    lines: ["{accent}pulse{dim} · {text}editing the strip"],
-  });
+  assert.deepEqual(status, [{ key: STATUS_KEY, text: "pulse · editing the strip" }]);
+  assert.equal(widgets.length, 1);
+  assert.equal(widgets[0]?.key, STATUS_KEY);
+  assert.equal(widgets[0]?.placement, "belowEditor");
+  assert.equal(typeof widgets[0]?.content, "function");
+  assert.deepEqual(widgets[0]?.lines, ["{accent}pulse{dim} · {text}editing the strip"]);
+});
+
+test("widget paint writes the widget and clears the status line", () => {
+  const { ui, status, widgets } = recordingUi();
+
+  paint(ui, { surface: "widget", placement: "belowEditor" }, "pulse · editing the strip");
+  assert.deepEqual(status, [{ key: STATUS_KEY, text: undefined }]);
+  assert.equal(widgets.length, 1);
+  assert.equal(widgets[0]?.key, STATUS_KEY);
+  assert.equal(typeof widgets[0]?.content, "function");
+  assert.equal(widgets[0]?.placement, "belowEditor");
+  assert.deepEqual(widgets[0]?.lines, ["{accent}pulse{dim} · {text}editing the strip"]);
+});
+
+test("status paint writes the status line and clears the widget", () => {
+  const { ui, status, widgets } = recordingUi();
+
+  paint(ui, { surface: "status", placement: "aboveEditor" }, "pulse · editing the strip");
+  assert.deepEqual(status, [{ key: STATUS_KEY, text: "pulse · editing the strip" }]);
+  assert.deepEqual(widgets, [{ key: STATUS_KEY, content: undefined, placement: undefined, lines: undefined }]);
 });
 
 test("widget-only paint falls back to status when the widget surface throws", () => {

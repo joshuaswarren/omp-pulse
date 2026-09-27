@@ -25,18 +25,34 @@ export function paint(
   config: { surface: Surface; placement: Placement },
   line: string,
 ): void {
-  if (config.surface === "status" || config.surface === "both") {
-    ui.setStatus(STATUS_KEY, line);
+  const showStatus = config.surface === "status" || config.surface === "both";
+  const showWidget = config.surface === "widget" || config.surface === "both";
+
+  if (showStatus) ui.setStatus(STATUS_KEY, line);
+
+  if (showWidget) {
+    try {
+      ui.setWidget(
+        STATUS_KEY,
+        (_tui, theme) => ({ render: () => [themeLine(theme, line)] }),
+        { placement: config.placement },
+      );
+    } catch {
+      if (config.surface === "widget") ui.setStatus(STATUS_KEY, line);
+      return;
+    }
+  } else {
+    clearWidget(ui);
   }
-  if (config.surface !== "widget" && config.surface !== "both") return;
+
+  if (config.surface === "widget") ui.setStatus(STATUS_KEY, undefined);
+}
+
+function clearWidget(ui: ChromeUi): void {
   try {
-    ui.setWidget(
-      STATUS_KEY,
-      (_tui, theme) => ({ render: () => [themeLine(theme, line)] }),
-      { placement: config.placement },
-    );
+    ui.setWidget(STATUS_KEY, undefined);
   } catch {
-    if (config.surface === "widget") ui.setStatus(STATUS_KEY, line);
+    /* status line is the only surface on this host */
   }
 }
 
