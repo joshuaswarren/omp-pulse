@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { paint, STATUS_KEY, statusLine, type ChromeUi } from "./chrome.ts";
 import { DEFAULT_CONFIG_PATH, loadConfig, type PulseConfig } from "./config.ts";
-import { extractiveSummary } from "./transcript.ts";
+import { extractiveSummary, isVagueStatus } from "./transcript.ts";
 import { runTick, type Phase } from "./tick.ts";
 
 type PulseUi = ChromeUi & {
@@ -55,7 +55,9 @@ export default function ompPulse(pi: PiApi): void {
 
   function showExtract(emptyBody: string): void {
     if (!host) return;
-    const body = extractiveSummary(readEntries()) || emptyBody;
+    const extracted = extractiveSummary(readEntries());
+    const body = extracted && !isVagueStatus(extracted) ? extracted : emptyBody;
+    if (!body || isVagueStatus(body)) return;
     lastLine = statusLine(body);
     paint(host.ui, config, lastLine);
   }
@@ -135,13 +137,13 @@ export default function ompPulse(pi: PiApi): void {
   pi.on("session_branch", (_event, ctx) => {
     host = ctx;
     previousFingerprint = "";
-    showExtract(phase === "inTurn" ? "working" : "idle");
+    showExtract(phase === "inTurn" ? "" : "idle");
   });
 
   pi.on("turn_start", (_event, ctx) => {
     host = ctx;
     phase = "inTurn";
-    showExtract("working");
+    showExtract("");
   });
 
   pi.on("turn_end", (_event, ctx) => {

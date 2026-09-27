@@ -46,21 +46,258 @@ export function recentTranscript(entries: unknown, maxChars: number): Transcript
   return { text, fingerprint: text };
 }
 
+type Action = {
+  name: string;
+  target: string;
+  ok: boolean;
+};
+
+const STATUS_FILLER = new Set([
+  "editing", "reading", "running", "searching", "blocked", "working",
+  "code", "file", "files", "checks", "tests", "test", "now", "step",
+]);
+
+const VAGUE_LINES = new Set([
+  "running todo",
+  "running todos",
+  "running todowrite",
+  "running task",
+  "running tasks",
+  "working",
+  "processing",
+  "thinking",
+  "updating",
+  "busy",
+  "loading",
+  "in progress",
+  "doing stuff",
+  "doing things",
+  "working on it",
+  "still working",
+  "still thinking",
+  "making progress",
+]);
+
+const BARE_STATUS = new Set([
+  "running", "working", "processing", "thinking", "updating", "busy", "loading",
+  "doing", "handling", "starting", "finishing", "waiting", "editing", "reading",
+  "searching", "writing", "fixing", "checking", "reviewing", "pondering",
+  "todo", "todos", "todowrite", "todoread", "task", "tasks", "tool", "tools",
+  "stuff", "thing", "things", "work", "progress", "request", "item", "items",
+  "step", "steps", "something", "anything", "update", "updates", "info",
+  "still", "currently", "just", "now", "again", "really", "actually", "simply",
+  "hard", "please", "wait", "moment", "around", "through", "onto",
+]);
+
+const BOOKKEEPING = new Set([
+  "todo", "todos", "todowrite", "todoread", "updatetodos", "task", "tasks",
+  "taskcreate", "taskupdate", "tasklist", "taskwrite",
+]);
+
+export function isVagueStatus(text: string): boolean {
+  const norm = normalize(text);
+  if (!norm || VAGUE_LINES.has(norm)) return true;
+  const words = norm.split(" ").filter((word) => word.length >= 3 && !STOP.has(word));
+  if (words.length === 0) return true;
+  return words.every((word) => BARE_STATUS.has(word));
+}
+
 export function extractiveSummary(entries: unknown): string {
+  const line = progressSummary(entries);
+  return line && !isVagueStatus(line) ? line : "";
+}
+
+function progressSummary(entries: unknown): string {
   const { users, items } = progressOf(entries);
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (!item) continue;
-    if (item.kind === "tool") return describeTool(item);
-    const call = item.calls[item.calls.length - 1];
-    if (call) return describeCall(call);
-    if (item.prose && !isParaphraseOfAny(item.prose, users)) return clipWords(stripMarkup(item.prose), 12);
+  const actions = concreteActions(actionsOf(items));
+  const last = actions[actions.length - 1];
+  if (last && !last.ok) return describeTool({ kind: "tool", name: last.name, target: last.target, ok: false, detail: "" });
+
+  const prose = usefulProse(items, users, actions);
+  const verbs = phasesOf(actions);
+  if (verbs.length === 0) {
+    const line = prose[prose.length - 1] ?? "";
+    return line ? clipWords(line, 12) : "";
   }
-  return "";
+  if (verbs.length === 1) {
+    const line = prose[prose.length - 1];
+    if (line) return clipWords(line, 12);
+    if (actions.length === 1 && last) {
+      const described = describeCall(last);
+      if (described) return described;
+    }
+    return phaseLabel(verbs[0] ?? "Running");
+  }
+
+  const current = verbs[verbs.length - 1] ?? "Running";
+  const earlier = verbs.slice(0, -1);
+  const aim = prose[0] ?? "";
+  const now = nowClause(current, last);
+  if (aim && coversEarlier(aim, earlier) && proseCovers(aim, current)) return clipWords(aim, 12);
+  if (aim && !proseCovers(aim, current)) return clipWords(`${aim}, ${now}`, 12);
+  return clipWords(`${doneClause(earlier)}, now ${now}`, 12);
 }
 
 export function echoesUserRequest(text: string, entries: unknown): boolean {
   return isParaphraseOfAny(text, progressOf(entries).users);
+}
+
+export function echoesLatestAction(text: string, entries: unknown): boolean {
+  const actions = concreteActions(actionsOf(progressOf(entries).items));
+  if (actions.length < 2) return false;
+  const last = actions[actions.length - 1];
+  if (!last) return false;
+  const norm = normalize(text);
+  if (!norm) return false;
+  if (norm === normalize(describeCall(last))) return true;
+  const lastBits = actionBits(last);
+  if (!lastBits.some((bit) => hasTokens(norm, bit))) return false;
+  const earlierBits = actions
+    .slice(0, -1)
+    .flatMap((action) => actionBits(action))
+    .filter((bit) => !lastBits.includes(bit));
+  if (earlierBits.some((bit) => hasTokens(norm, bit))) return false;
+  let stripped = norm;
+  for (const bit of lastBits) stripped = stripped.split(bit).join(" ");
+  const leftover = stripped
+    .split(" ")
+    .filter((word) => word.length >= 3 && !STOP.has(word) && !STATUS_FILLER.has(word));
+  return leftover.length === 0;
+}
+
+function concreteActions(actions: Action[]): Action[] {
+  return actions.filter((action) => !isBookkeeping(action));
+}
+
+function isBookkeeping(action: Action): boolean {
+  const name = action.name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (!BOOKKEEPING.has(name) && !name.includes("todo")) return false;
+  return !action.target.includes("/") && !/\.[a-z0-9]{1,8}$/i.test(action.target);
+}
+
+function actionsOf(items: Array<Exclude<Item, { kind: "user" }>>): Action[] {
+  const actions: Action[] = [];
+  const pending: Action[] = [];
+  for (const item of items) {
+    if (item.kind === "assistant") {
+      for (const call of item.calls) {
+        const action = { name: call.name, target: call.target, ok: true };
+        actions.push(action);
+        pending.push(action);
+      }
+      continue;
+    }
+    const match = pending.find((action) => action.name === item.name);
+    if (match) {
+      if (!match.target) match.target = item.target;
+      if (!item.ok) match.ok = false;
+      pending.splice(pending.indexOf(match), 1);
+      continue;
+    }
+    actions.push({ name: item.name, target: item.target, ok: item.ok });
+  }
+  return actions;
+}
+
+function phasesOf(actions: Action[]): string[] {
+  const phases: string[] = [];
+  for (const action of actions) {
+    const verb = verbFor(action.name);
+    if (phases[phases.length - 1] !== verb) phases.push(verb);
+  }
+  return phases;
+}
+
+function usefulProse(
+  items: Array<Exclude<Item, { kind: "user" }>>,
+  users: string[],
+  actions: Action[],
+): string[] {
+  const found: string[] = [];
+  for (const item of items) {
+    if (item.kind !== "assistant" || !item.prose) continue;
+    const clean = cleanProse(item.prose);
+    if (!clean || isParaphraseOfAny(clean, users) || isToolEcho(clean, actions) || isVagueStatus(clean)) continue;
+    found.push(clean);
+  }
+  return found;
+}
+
+function cleanProse(text: string): string {
+  return stripMarkup(text).replace(/[.!?]+$/g, "").trim();
+}
+
+function isToolEcho(prose: string, actions: Action[]): boolean {
+  let stripped = normalize(prose);
+  for (const action of actions) {
+    for (const bit of actionBits(action)) stripped = stripped.split(bit).join(" ");
+  }
+  const words = stripped.split(" ").filter((word) => word.length >= 3 && !STOP.has(word));
+  return words.length < 2;
+}
+
+function actionBits(action: Action): string[] {
+  const bits = [normalize(action.name), normalize(action.target)];
+  const base = action.target.split("/").pop() ?? "";
+  if (base) bits.push(normalize(base));
+  return [...new Set(bits.filter((bit) => bit.length >= 3))];
+}
+
+function hasTokens(text: string, bit: string): boolean {
+  const tokens = text.split(" ").filter(Boolean);
+  const parts = bit.split(" ").filter(Boolean);
+  if (parts.length === 0) return false;
+  for (let index = 0; index <= tokens.length - parts.length; index += 1) {
+    if (parts.every((part, offset) => tokens[index + offset] === part)) return true;
+  }
+  return false;
+}
+
+function proseCovers(prose: string, verb: string): boolean {
+  const text = normalize(prose);
+  if (verb === "Editing") return /\bedit/.test(text);
+  if (verb === "Reading") return /\bread/.test(text);
+  if (verb === "Searching") return /\b(search|grep|find)\b/.test(text);
+  if (verb === "Running") return /\b(run|running|test|bash)\b/.test(text);
+  return false;
+}
+
+function coversEarlier(prose: string, earlier: string[]): boolean {
+  return earlier.some((verb) => proseCovers(prose, verb));
+}
+
+function phaseLabel(verb: string): string {
+  if (verb === "Editing") return "Editing the code";
+  if (verb === "Reading") return "Reading the code";
+  if (verb === "Searching") return "Searching the code";
+  if (verb === "Running") return "Running checks";
+  return "Continuing the change";
+}
+
+function nowClause(verb: string, action: Action | undefined): string {
+  if (verb === "Running") {
+    const command = action?.target.toLowerCase() ?? "";
+    if (/\b(npm|pnpm|yarn|bun) test\b/.test(command) || /\b(pytest|cargo test|go test)\b/.test(command)) {
+      return "running tests";
+    }
+    if (action?.target) return `running ${action.target}`;
+    return "running checks";
+  }
+  if (verb === "Editing") return "editing the code";
+  if (verb === "Reading") return "reading the code";
+  if (verb === "Searching") return "searching the code";
+  return "continuing the change";
+}
+
+function doneClause(verbs: string[]): string {
+  const kinds = new Set(verbs);
+  const review = [...kinds].every((verb) => verb === "Reading" || verb === "Searching");
+  if (review && kinds.has("Reading") && kinds.has("Searching")) return "Reviewed the code";
+  if (review && kinds.has("Searching")) return "Searched the code";
+  if (review) return "Read the code";
+  if (kinds.has("Editing")) return "Updated the code";
+  if (kinds.has("Running")) return "Ran checks";
+  return "Continued the change";
 }
 
 function progressOf(entries: unknown): { users: string[]; items: Array<Exclude<Item, { kind: "user" }>> } {
@@ -201,7 +438,7 @@ function describeTool(item: Extract<Item, { kind: "tool" }>): string {
 function describeCall(call: ToolRef): string {
   const verb = verbFor(call.name);
   if (call.target) return clipWords(`${verb} ${call.target}`, 12);
-  if (verb === "Running") return clipWords(`Running ${call.name}`, 12);
+  if (verb === "Running") return "";
   return clipWords(`${verb} with ${call.name}`, 12);
 }
 

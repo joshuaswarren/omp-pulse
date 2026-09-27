@@ -7,13 +7,16 @@ export type Summary = {
 };
 
 const SYSTEM_PROMPT = [
-  "Write one status line for the coding agent's current progress.",
+  "Write one status line for the agent's overall progress this turn.",
   "Present tense. At most 12 words.",
-  "Name tools, files, the current step, or a blocker shown in the transcript.",
+  "Say what is done, what is in flight, and what comes next toward the goal.",
+  "Summarize across the whole turn. Do not report only the latest tool, file, or command.",
+  "Name a concrete object. Never answer with a bare status verb or a tool name alone.",
+  "Never answer: Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, Doing stuff.",
   "The transcript is agent work since the user spoke, not the user's request.",
   "Never restate or paraphrase the user's request.",
   "No quotes, markdown, or advice.",
-  "If the transcript shows no agent progress, answer: working",
+  "If the transcript shows no concrete step, describe the files or commands already touched.",
 ].join(" ");
 
 export async function summarize(input: {
@@ -22,7 +25,7 @@ export async function summarize(input: {
   provider: ProviderConfig;
   fetchImpl?: typeof fetch;
 }): Promise<Summary> {
-  const fallback = input.fallback.trim() || "working";
+  const fallback = input.fallback.trim() || "idle";
   if (!input.transcript.trim()) return { text: fallback, source: "extract" };
   const url = completionsUrl(input.provider.baseUrl);
   if (!url) return { text: fallback, source: "extract" };

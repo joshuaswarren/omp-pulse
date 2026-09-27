@@ -17,7 +17,7 @@ The strip reads the session branch omp already keeps and asks a cheap model for 
 
 `surface: "both"` paints the same `pulse · …` line with `setWidget` and `setStatus`, so the strip shows up twice. That mode stays available for anyone who wants both chrome slots, and it is usually the wrong setting for a live smoke test. The default is `widget`, which leaves the native statusline for git, model, and context.
 
-On turn start the line is a local extract of agent progress since the latest user message (tools, files, the current step, or a blocker), so the strip is not blank for the whole interval. That extract, and the tail sent to the model, leave out the opening user message, so the line does not restate the prompt. The cheap model rewrites it on the timer (default 7 minutes) and again when the turn ends, if that progress changed. `/pulse` refreshes on demand.
+On turn start the line is a local extract of progress since the latest user message: what is done, what is in flight, and what is next. It summarizes the turn, so a string of tool calls does not collapse to the last file or command. Vague lines with no object, such as "Running todo" or "Working", are discarded. A blocker still surfaces when the latest real step failed. That extract, and the tail sent to the model, leave out the opening user message, so the line does not restate the prompt. The cheap model rewrites it on the timer (default 7 minutes) and again when the turn ends, if that progress changed. `/pulse` refreshes on demand.
 
 The in-flight token stream is not on the branch until omp records the message. The strip summarizes persisted session messages, not a second queue.
 
