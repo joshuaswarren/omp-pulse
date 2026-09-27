@@ -1,6 +1,45 @@
 import type { ProviderConfig } from "./config.ts";
 import { clipWords } from "./text.ts";
 
+/** omp model role for the cheap one-line rewrite. `ctx.models.resolve` expands `modelRoles.smol`. */
+export const SMOL_ROLE = "@smol";
+
+export type SmolModel = {
+  readonly id: string;
+  readonly provider: string;
+};
+
+export type SmolApiKey = string | ((...args: never[]) => Promise<string | undefined>);
+
+export type SmolComplete = (
+  model: SmolModel,
+  context: {
+    systemPrompt?: string[];
+    messages: Array<{ role: "user"; content: string; timestamp: number }>;
+  },
+  options?: {
+    apiKey?: SmolApiKey;
+    maxTokens?: number;
+    disableReasoning?: boolean;
+    signal?: AbortSignal;
+  },
+) => Promise<{
+  stopReason: string;
+  errorMessage?: string;
+  content: ReadonlyArray<{ type: string; text?: string }>;
+}>;
+
+/** Narrow slice of the live extension ctx: `models.resolve` and `modelRegistry`. */
+export type PulseModelHost = {
+  models?: {
+    resolve(spec: string): SmolModel | undefined;
+  };
+  modelRegistry?: {
+    getApiKey(model: SmolModel): Promise<string | undefined>;
+    resolver?(model: SmolModel): SmolApiKey;
+  };
+};
+
 export type Summary = {
   text: string;
   source: "model" | "extract";
@@ -23,12 +62,15 @@ export async function summarize(input: {
   transcript: string;
   fallback: string;
   provider: ProviderConfig;
+  host?: PulseModelHost;
   fetchImpl?: typeof fetch;
+  completeImpl?: SmolComplete;
 }): Promise<Summary> {
   const fallback = input.fallback.trim() || "idle";
   if (!input.transcript.trim()) return { text: fallback, source: "extract" };
+  if (input.provider.baseUrl === "") return summarizeWithSmol(input, fallback);
   const url = completionsUrl(input.provider.baseUrl);
-  if (!url) return { text: fallback, source: "extract" };
+  if (!url || input.provider.model === "") return { text: fallback, source: "extract" };
 
   const fetchImpl = input.fetchImpl ?? fetch;
   try {
@@ -56,6 +98,62 @@ export async function summarize(input: {
   } catch {
     return { text: fallback, source: "extract" };
   }
+}
+
+async function summarizeWithSmol(
+  input: {
+    transcript: string;
+    provider: ProviderConfig;
+    host?: PulseModelHost;
+    completeImpl?: SmolComplete;
+  },
+  fallback: string,
+): Promise<Summary> {
+  const resolve = input.host?.models?.resolve;
+  const registry = input.host?.modelRegistry;
+  if (!resolve || !registry?.getApiKey) return { text: fallback, source: "extract" };
+
+  try {
+    const model = resolve(SMOL_ROLE);
+    if (!model) return { text: fallback, source: "extract" };
+    const apiKey = await registry.getApiKey(model);
+    if (!apiKey) return { text: fallback, source: "extract" };
+    const complete = input.completeImpl ?? (await loadCompleteSimple());
+    const response = await complete(
+      model,
+      {
+        systemPrompt: [SYSTEM_PROMPT],
+        messages: [{ role: "user", content: input.transcript, timestamp: Date.now() }],
+      },
+      {
+        apiKey: registry.resolver?.(model) ?? apiKey,
+        maxTokens: 60,
+        disableReasoning: true,
+        signal: AbortSignal.timeout(input.provider.timeoutMs),
+      },
+    );
+    if (response.stopReason === "error" || response.stopReason === "aborted") {
+      return { text: fallback, source: "extract" };
+    }
+    const text = cleanModelText(textFromContent(response.content));
+    if (!text) return { text: fallback, source: "extract" };
+    return { text, source: "model" };
+  } catch {
+    return { text: fallback, source: "extract" };
+  }
+}
+
+async function loadCompleteSimple(): Promise<SmolComplete> {
+  const { completeSimple } = await import("@oh-my-pi/pi-ai");
+  return completeSimple;
+}
+
+function textFromContent(content: ReadonlyArray<{ type: string; text?: string }>): string {
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block.type === "text" && typeof block.text === "string") parts.push(block.text);
+  }
+  return parts.join(" ");
 }
 
 export function completionsUrl(baseUrl: string): string | undefined {

@@ -6,7 +6,9 @@ export type Surface = "status" | "widget" | "both";
 export type Placement = "aboveEditor" | "belowEditor";
 
 export type ProviderConfig = {
+  /** Empty selects omp's smol role. A non-empty http(s) URL is an opt-in OpenAI-compatible override. */
   baseUrl: string;
+  /** Model id for the opt-in override. Ignored when baseUrl is empty. */
   model: string;
   apiKey: string;
   timeoutMs: number;
@@ -39,8 +41,8 @@ export function loadConfig(options?: { configPath?: string; env?: NodeJS.Process
     placement: placementFrom(env.OMP_PULSE_PLACEMENT, file.placement),
     maxTranscriptChars: clamp(numberFrom(env.OMP_PULSE_MAX_CHARS, file.maxTranscriptChars, 8_000), 500, 32_000),
     provider: {
-      baseUrl: stripSlash(stringFrom(env.OMP_PULSE_BASE_URL, providerFile.baseUrl, "http://127.0.0.1:11434/v1")),
-      model: stringFrom(env.OMP_PULSE_MODEL, providerFile.model, "qwen2.5:0.5b"),
+      baseUrl: stripSlash(stringFrom(env.OMP_PULSE_BASE_URL, providerFile.baseUrl, "")),
+      model: stringFrom(env.OMP_PULSE_MODEL, providerFile.model, ""),
       apiKey: stringFrom(env.OMP_PULSE_API_KEY, providerFile.apiKey, ""),
       timeoutMs: clamp(numberFrom(env.OMP_PULSE_TIMEOUT_MS, providerFile.timeoutMs, 15_000), 1_000, 60_000),
     },

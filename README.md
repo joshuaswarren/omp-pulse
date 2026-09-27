@@ -2,7 +2,7 @@
 
 One line of transcript status in the [omp](https://github.com/can1357/oh-my-pi) TUI, refreshed on a timer while a turn is running.
 
-The strip reads the session branch omp already keeps and asks a cheap model for a single line. By default it paints that line once, with `setWidget` (`belowEditor`). It does not send a prompt, steer, follow-up, or aside into the live turn.
+The strip reads the session branch omp already keeps and asks omp's **smol** model role (`modelRoles.smol`) for a single line. By default it paints that line once, with `setWidget` (`belowEditor`). It does not send a prompt, steer, follow-up, or aside into the live turn.
 
 ```
 +--------------------------------------------------------------+
@@ -17,7 +17,7 @@ The strip reads the session branch omp already keeps and asks a cheap model for 
 
 `surface: "both"` paints the same `pulse · …` line with `setWidget` and `setStatus`, so the strip shows up twice. That mode stays available for anyone who wants both chrome slots, and it is usually the wrong setting for a live smoke test. The default is `widget`, which leaves the native statusline for git, model, and context.
 
-On turn start the line is a local extract of progress since the latest user message: what is done, what is in flight, and what is next. It summarizes the turn, so a string of tool calls does not collapse to the last file or command. Vague lines with no object, such as "Running todo" or "Working", are discarded. A blocker still surfaces when the latest real step failed. That extract, and the tail sent to the model, leave out the opening user message, so the line does not restate the prompt. The cheap model rewrites it on the timer (default 7 minutes) and again when the turn ends, if that progress changed. `/pulse` refreshes on demand.
+On turn start the line is a local extract of progress since the latest user message: what is done, what is in flight, and what is next. It summarizes the turn, so a string of tool calls does not collapse to the last file or command. Vague lines with no object, such as "Running todo" or "Working", are discarded. A blocker still surfaces when the latest real step failed. That extract, and the tail sent to the model, leave out the opening user message, so the line does not restate the prompt. Smol rewrites it on the timer (default 7 minutes) and again when the turn ends, if that progress changed. `/pulse` refreshes on demand.
 
 The in-flight token stream is not on the branch until omp records the message. The strip summarizes persisted session messages, not a second queue.
 
@@ -37,7 +37,7 @@ Requires Node 20 or newer and omp with managed timers (`ctx.setInterval`, omp 18
 
 ## Config
 
-Optional file at `~/.omp/agent/omp-pulse/config.json`. Environment variables override the file. With neither, the extension calls a local OpenAI-compatible server (Ollama's default) and, if that call fails, keeps the local extract.
+Optional file at `~/.omp/agent/omp-pulse/config.json`. Environment variables override the file. With neither, the extension resolves omp's **smol** role (`ctx.models.resolve("@smol")`, which reads `modelRoles.smol`) and completes through `@oh-my-pi/pi-ai`'s `completeSimple`. The API key comes from `ctx.modelRegistry.getApiKey`. If smol is unresolved, the call fails, or the line is empty or vague, the strip keeps the local extract.
 
 ```json
 {
@@ -47,9 +47,6 @@ Optional file at `~/.omp/agent/omp-pulse/config.json`. Environment variables ove
   "placement": "belowEditor",
   "maxTranscriptChars": 8000,
   "provider": {
-    "baseUrl": "http://127.0.0.1:11434/v1",
-    "model": "qwen2.5:0.5b",
-    "apiKey": "",
     "timeoutMs": 15000
   }
 }
@@ -61,11 +58,11 @@ Optional file at `~/.omp/agent/omp-pulse/config.json`. Environment variables ove
 | `refreshWhileIdle` | `false` | Also run the model refresh when no turn is active, if the transcript changed. |
 | `surface` | `widget` | `widget` (`setWidget` only; default), `status` (`setStatus` only), or `both` (same line in both slots, so the strip appears twice; usually wrong for smoke). |
 | `placement` | `belowEditor` | `aboveEditor` or `belowEditor`. |
-| `maxTranscriptChars` | `8000` | Tail of the branch sent to the model. |
-| `provider.baseUrl` | `http://127.0.0.1:11434/v1` | OpenAI-compatible base URL. The extension POSTs `{baseUrl}/chat/completions`. |
-| `provider.model` | `qwen2.5:0.5b` | Model name on that endpoint. |
-| `provider.apiKey` | empty | Sent as `Authorization: Bearer` when set. Ollama does not need one. |
-| `provider.timeoutMs` | `15000` | Request timeout. |
+| `maxTranscriptChars` | `8000` | Tail of the branch sent to smol. |
+| `provider.baseUrl` | empty | Leave empty to use omp smol. Set an http(s) URL only to opt into a custom OpenAI-compatible endpoint. The extension then POSTs `{baseUrl}/chat/completions`. |
+| `provider.model` | empty | Model name for that opt-in endpoint. Ignored when `baseUrl` is empty. |
+| `provider.apiKey` | empty | Sent as `Authorization: Bearer` on the opt-in endpoint when set. Smol uses omp's own credential via `modelRegistry`. |
+| `provider.timeoutMs` | `15000` | Smol or override request timeout. |
 
 Environment overrides:
 
@@ -81,25 +78,15 @@ Environment overrides:
 | `OMP_PULSE_API_KEY` | `provider.apiKey` |
 | `OMP_PULSE_TIMEOUT_MS` | `provider.timeoutMs` |
 
-### Local model
+### Smol
 
-```sh
-ollama pull qwen2.5:0.5b
-```
+Configure the cheap model on omp itself, under `modelRoles.smol` (and the credentials omp already stores for that provider). omp-pulse does not pick a model id and does not call a localhost chat endpoint.
 
-The default base URL is Ollama's OpenAI-compatible endpoint. Any small model you already serve on `/v1` works if you set `OMP_PULSE_MODEL`.
+A config copied from 0.1.3 that still sets `provider.baseUrl` and `provider.model` opts out of smol. Remove those two keys to use smol again.
 
-### Fleet or other OpenAI-compatible endpoint
+### Opt-in OpenAI-compatible endpoint
 
-```sh
-export OMP_PULSE_BASE_URL=http://fleet-host:8000/v1
-export OMP_PULSE_MODEL=qwen2.5-0.5b
-export OMP_PULSE_API_KEY=   # only if that endpoint requires a key
-```
-
-Use the same base URL shape you would pass to an OpenAI client (`.../v1`, not the bare host).
-
-### Cheap cloud
+This is off unless you set both a base URL and a model. It is not the default, and it is separate from the key omp uses for the live turn.
 
 ```sh
 export OMP_PULSE_BASE_URL=https://api.openai.com/v1
@@ -107,11 +94,11 @@ export OMP_PULSE_MODEL=gpt-4.1-nano
 export OMP_PULSE_API_KEY=sk-...
 ```
 
-Point `OMP_PULSE_BASE_URL` and `OMP_PULSE_MODEL` at whatever cheap chat model your provider exposes. This key is only for the status strip. It is not the key omp uses for the live turn.
+Use the same base URL shape you would pass to an OpenAI client (`.../v1`, not the bare host).
 
 ## Does not join the live turn
 
-omp-pulse never calls `prompt`, `steer`, `followUp`, aside delivery, or `sendUserMessage`. A timer tick reads `ctx.sessionManager.getBranch()`, POSTs that tail to the configured endpoint, and writes the line into chrome.
+omp-pulse never calls `prompt`, `steer`, `followUp`, aside delivery, or `sendUserMessage`. A timer tick reads `ctx.sessionManager.getBranch()`, asks smol for one line, and writes that line into chrome.
 
 `/pulse` does the same refresh when you ask. The command does not enqueue work on the agent.
 
