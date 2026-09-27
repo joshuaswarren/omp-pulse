@@ -128,7 +128,7 @@ const KNOWN_SHORT = new Set(
 
 /** 6–7 letter words that do not match a normal complete ending. */
 const KNOWN_LONG = new Set(
-  `button column config design layout method number origin public return review schema screen static stream string window`
+  `button column config design layout method number origin public return review rollup schema screen static stream string window`
     .split(/\s+/)
     .filter(Boolean),
 );
@@ -232,23 +232,21 @@ function progressSummary(entries: unknown): string {
 
   const prose = usefulProse(items, users, actions);
   const verbs = phasesOf(actions);
-  if (verbs.length === 0) {
-    const line = prose[prose.length - 1] ?? "";
-    return line ? clipWords(line, 12) : "";
-  }
+  const aim = prose[0] ?? "";
+  if (verbs.length === 0) return aim ? clipWords(aim, 12) : "";
   if (verbs.length === 1) {
-    const line = prose[prose.length - 1];
-    if (line) return clipWords(line, 12);
+    const verb = verbs[0] ?? "Running";
+    if (aim && (prose.length === 1 || proseCovers(aim, verb))) return clipWords(aim, 12);
+    if (aim) return clipWords(`${aim}, ${nowClause(verb, last)}`, 12);
     if (actions.length === 1 && last) {
       const described = describeCall(last);
       if (described) return described;
     }
-    return phaseLabel(verbs[0] ?? "Running");
+    return phaseLabel(verb);
   }
 
   const current = verbs[verbs.length - 1] ?? "Running";
   const earlier = verbs.slice(0, -1);
-  const aim = prose[0] ?? "";
   const now = nowClause(current, last);
   if (aim && coversEarlier(aim, earlier) && proseCovers(aim, current)) return clipWords(aim, 12);
   if (aim && !proseCovers(aim, current)) return clipWords(`${aim}, ${now}`, 12);
@@ -257,6 +255,26 @@ function progressSummary(entries: unknown): string {
 
 export function echoesUserRequest(text: string, entries: unknown): boolean {
   return isParaphraseOfAny(text, progressOf(entries).users);
+}
+
+/** True when the line is only the latest assistant decision and the turn has earlier work. */
+export function echoesLatestClause(text: string, entries: unknown): boolean {
+  const { users, items } = progressOf(entries);
+  const clauses: string[] = [];
+  for (const item of items) {
+    if (item.kind !== "assistant" || !item.prose) continue;
+    const clean = cleanProse(item.prose);
+    if (!clean || isParaphraseOfAny(clean, users)) continue;
+    clauses.push(...splitClauses(clean));
+  }
+  const latest = clauses[clauses.length - 1] ?? "";
+  if (!latest || !sameClause(text, latest)) return false;
+  const earlierClauses = clauses.slice(0, -1);
+  const verbs = phasesOf(concreteActions(actionsOf(items)));
+  if (earlierClauses.length === 0 && verbs.length < 2) return false;
+  if (earlierClauses.some((clause) => sameClause(text, clause))) return false;
+  if (verbs.slice(0, -1).some((verb) => proseCovers(text, verb))) return false;
+  return true;
 }
 
 export function echoesLatestAction(text: string, entries: unknown): boolean {
@@ -342,6 +360,30 @@ function usefulProse(
 
 function cleanProse(text: string): string {
   return stripMarkup(text).replace(/[.!?]+$/g, "").trim();
+}
+
+function splitClauses(text: string): string[] {
+  const parts = text
+    .split(/(?<=[.!?])\s+|\s+[—–]\s+|\s+-\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts : [text];
+}
+
+function sameClause(candidate: string, clause: string): boolean {
+  const left = normalize(candidate);
+  const right = normalize(clause);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const words = significantWords(candidate);
+  const clauseWords = new Set(significantWords(clause));
+  const extra = words.filter((word) => !clauseWords.has(word) && !STATUS_FILLER.has(word));
+  if (left.includes(right) && extra.length > 0) return false;
+  if (right.includes(left) && left.length >= 12 && left.length < right.length) return true;
+  if (words.length < 3) return false;
+  let hits = 0;
+  for (const word of words) if (clauseWords.has(word)) hits += 1;
+  return hits / words.length >= 0.75 && extra.length === 0;
 }
 
 function isToolEcho(prose: string, actions: Action[]): boolean {

@@ -9,6 +9,7 @@ import { loadConfig } from "../src/config.ts";
 import { completionsUrl, SMOL_ROLE, summarize, type PulseModelHost, type SmolComplete, type SmolModel } from "../src/summarize.ts";
 import { runTick } from "../src/tick.ts";
 import {
+  echoesLatestClause,
   extractiveSummary,
   isAnsweringStatus,
   isContentParaphrase,
@@ -738,6 +739,106 @@ test("truncated answers and topic paraphrases stay off the strip", async () => {
   });
   assert.equal(stillBad.calls.length, 2);
   assert.deepEqual(prior, { action: "skip" });
+});
+
+test("a latest decision is rejected for a whole-turn rollup", async () => {
+  const latest = "Keeping the widget below the editor";
+  const turn = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token ship the whole-turn status rollup" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Shipping the status strip." },
+          { type: "toolCall", name: "read", arguments: { path: "src/summarize.ts" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "read", content: [{ type: "text", text: "prompt text" }] },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Searching the transcript helpers." },
+          { type: "toolCall", name: "grep", arguments: { pattern: "progressSummary", path: "src" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "grep", content: [{ type: "text", text: "src/transcript.ts" }] },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: `${latest}.` },
+          { type: "toolCall", name: "edit", arguments: { path: "src/chrome.ts" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "edit", content: "updated src/chrome.ts" },
+    },
+  ];
+
+  assert.equal(echoesLatestClause(latest, turn), true);
+  assert.equal(echoesLatestClause("Keeping the widget below the editor now", turn), true);
+  const rollup = "Shipping the status strip, editing the code";
+  assert.equal(echoesLatestClause(rollup, turn), false);
+  assert.equal(extractiveSummary(turn), rollup);
+  assert.equal(extractiveSummary(turn).toLowerCase().includes("widget"), false);
+  assert.equal(extractiveSummary(turn).includes("zebra-prompt-token"), false);
+
+  const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
+  assert.equal(config.provider.baseUrl, "");
+  assert.equal(config.provider.model, "");
+
+  const decided = smolDouble(() => latest);
+  const painted = await runTick({
+    phase: "inTurn",
+    config,
+    entries: turn,
+    previousFingerprint: "",
+    force: false,
+    host: decided.host,
+    completeImpl: decided.completeImpl,
+    fetchImpl: decided.fetchImpl,
+  });
+  assert.equal(decided.calls.length, 1);
+  assert.equal(decided.resolved[0], SMOL_ROLE);
+  assert.match(decided.calls[0]?.system ?? "", /entire current turn/);
+  assert.match(decided.calls[0]?.system ?? "", /latest decision/);
+  assert.match(decided.calls[0]?.system ?? "", /latest tool/);
+  assert.equal(painted.action, "paint");
+  if (painted.action !== "paint") return;
+  assert.equal(painted.source, "extract");
+  assert.equal(painted.line, `pulse · ${rollup}`);
+  assert.equal(painted.line.toLowerCase().includes("widget"), false);
+
+  const broad = smolDouble(() => "Shipping the status strip, read the code, now editing");
+  const kept = await runTick({
+    phase: "inTurn",
+    config,
+    entries: turn,
+    previousFingerprint: "",
+    force: false,
+    host: broad.host,
+    completeImpl: broad.completeImpl,
+    fetchImpl: broad.fetchImpl,
+  });
+  assert.equal(kept.action, "paint");
+  if (kept.action !== "paint") return;
+  assert.equal(kept.source, "model");
+  assert.equal(kept.line, "pulse · Shipping the status strip, read the code, now editing");
+  assert.equal(broad.resolved[0], SMOL_ROLE);
 });
 
 test("a failed tool is a blocker and json arguments still name the command", () => {

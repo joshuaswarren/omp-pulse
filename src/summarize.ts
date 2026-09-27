@@ -48,8 +48,8 @@ export type Summary = {
 const SYSTEM_PROMPT = [
   "Write one status line for the agent's overall progress this turn.",
   "Present tense. At most 12 words.",
-  "Say what is done, what is in flight, and what comes next toward the goal.",
-  "Summarize across the whole turn. Do not report only the latest tool, file, or command.",
+  "Roll up the entire current turn: the goal, the phase, what is done, what is in flight, and what comes next.",
+  "Summarize across the whole turn. Do not report only the latest decision, the latest assistant sentence, the latest tool, file, or command.",
   "Name a concrete object. Never answer with a bare status verb or a tool name alone.",
   "Never answer: Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, Doing stuff.",
   "The transcript is agent work since the user spoke, not the user's request.",

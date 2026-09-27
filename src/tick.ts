@@ -1,7 +1,7 @@
 import type { PulseConfig } from "./config.ts";
 import { statusLine } from "./chrome.ts";
 import { summarize, type PulseModelHost, type SmolComplete } from "./summarize.ts";
-import { echoesLatestAction, echoesUserRequest, extractiveSummary, isRejectedStatus, isVagueStatus, recentTranscript } from "./transcript.ts";
+import { echoesLatestAction, echoesLatestClause, echoesUserRequest, extractiveSummary, isRejectedStatus, isVagueStatus, recentTranscript } from "./transcript.ts";
 
 export type Phase = "idle" | "inTurn";
 
@@ -30,10 +30,18 @@ const RETRY_NOTE = [
   "Do not start with Yes, No, Sure, or Okay.",
   "Do not stop mid-word, mid-phrase, or on a dash.",
   "Do not give advice or restate draft content about the topic.",
+  "Do not repeat only the latest decision or the latest assistant sentence.",
+  "Roll up the whole turn: goal, phase, done, in flight, and next.",
 ].join(" ");
 
 function unusable(text: string, entries: unknown): boolean {
-  return isVagueStatus(text) || isRejectedStatus(text) || echoesUserRequest(text, entries) || echoesLatestAction(text, entries);
+  return (
+    isVagueStatus(text) ||
+    isRejectedStatus(text) ||
+    echoesUserRequest(text, entries) ||
+    echoesLatestAction(text, entries) ||
+    echoesLatestClause(text, entries)
+  );
 }
 
 export async function runTick(input: {
