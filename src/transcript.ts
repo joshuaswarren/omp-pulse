@@ -102,9 +102,126 @@ export function isVagueStatus(text: string): boolean {
   return words.every((word) => BARE_STATUS.has(word));
 }
 
+const DANGLING_END = new Set(
+  `a an the and or but nor so yet because if when while although though whether unless
+   that which who whom whose where what how to of for with from into about onto upon on in at by as than via per
+   without within across toward towards after before during until since through over under between among against around along
+   off up out vs versus then`
+    .split(/\s+/)
+    .filter(Boolean),
+);
+
+/** Words of at most 5 letters that can end a finished status line. Longer tokens use a suffix check. */
+const KNOWN_SHORT = new Set(
+  `ok ui ux id js ts ai os py sh go rb vm ip io qa pr ci cd db api url uri css git src npm pnpm yarn bun node bash grep glob
+   cli gui tui sdk mcp llm ide sql ssh http json yaml yml html omp pid env tmp log err csv svg png jpg pdf xml jwt key
+   add all any app args back base best bin body both bug bump busy call cargo check code col data debug deps diff
+   docs done draft each edit end error fail fails feat file files find fix flag form full get good grep head help high
+   hook host idle index info init issue just last left less lib line lines lint list lock log logs main make map mock
+   mode model more name new next node note notes now null old only open opts out pass patch path phase pid pkg
+   port pulse put read real ref repo rev role row run runs same set sha ship show site smol spec src state step stub
+   strip style suite sync tab test tests text theme timer todo tool tools tree true turn type unit user ver view wait warn watch
+   word words work write yaml yes yet`
+    .split(/\s+/)
+    .filter((word) => word.length > 0 && word.length <= 5),
+);
+
+/** 6–7 letter words that do not match a normal complete ending. */
+const KNOWN_LONG = new Set(
+  `button column config design layout method number origin public return review rollup schema screen static stream string window`
+    .split(/\s+/)
+    .filter(Boolean),
+);
+
+const COMPLETE_ENDING =
+  /(?:ing|ed|es|er|or|ly|ion|al|ic|ty|ry|ow|ew|ay|ey|oy|ee|oo|ous|ful|ive|est|ist|ism|ate|ble|nce|ncy|ity|ory|ary|ery|ship|hood|ward|ment|ness|tion|sion|age|ant|ent|ck|sh|ch|th|gh|ph|nt|st|nd|ld|mp|ct|pt|ng|e|s|y|t|d)$/;
+
+const PROGRESS_WORDS = new Set(
+  `edit edits edited editing read reads reading run runs ran running search searched searching grep grepped grepping
+   update updates updated updating review reviews reviewed reviewing fix fixes fixed fixing check checks checked checking
+   write writes wrote written writing implement implements implemented implementing add adds added adding remove removes
+   removed removing test tests tested testing summarize summarizes summarized summarizing ship ships shipped
+   shipping debug debugged debugging refactor refactored refactoring install installed installing build builds built
+   building compile compiles compiled compiling verify verifies verified verifying finish finishes finished finishing
+   start starts started starting block blocks blocked blocking wait waits waited waiting investigate investigates
+   investigated investigating explore explores explored exploring scan scans scanned scanning parse parses parsed parsing
+   rename renames renamed renaming delete deletes deleted deleting create creates created creating open opens opened
+   opening close closes closed closing commit commits committed committing push pushes pushed pushing pull pulls pulled
+   pulling merge merges merged merging rebase rebases rebased rebasing lint lints linted linting format formats formatted
+   formatting document documents documented documenting design designs designed designing wire wires wired wiring hook
+   hooks hooked hooking fetch fetches fetched fetching prepare prepares prepared preparing apply applies applied applying
+   draft drafts drafted drafting outline outlines outlined outlining plan plans planned planning trace traces traced
+   tracing validate validates validated validating confirm confirms confirmed confirming compare compares compared
+   comparing migrate migrates migrated migrating bump bumps bumped bumping publish publishes published publishing
+   deploy deploys deployed deploying configure configures configured configuring connect connects connected connecting
+   resolve resolves resolved resolving reject rejects rejected rejecting paint paints painted painting inspect inspects
+   inspected inspecting audit audits audited auditing index indexes indexed indexing load loads loaded loading save saves
+   saved saving continue continues continued continuing keep keeps kept keeping`
+    .split(/\s+/)
+    .filter(Boolean),
+);
+
+const ANSWER_START = /^(yes|no|sure|okay|ok)\b/i;
+
+export function isTruncatedStatus(text: string): boolean {
+  let flat = text.replace(/\s+/g, " ").trim().replace(/^["']+|["']+$/g, "").trim();
+  if (!flat) return false;
+  if (/[—–]$/.test(flat) || /(?:^|\s)-$/.test(flat)) return true;
+  if (/[,:;([/\\]$/.test(flat)) return true;
+  if (/(?:\.\.\.|…)$/.test(flat)) return true;
+  const token = (flat.split(" ").pop() ?? "").replace(/[.!?]+$/g, "");
+  if (!token) return true;
+  if (DANGLING_END.has(token.toLowerCase())) return true;
+  return endsMidWord(token);
+}
+
+export function isAnsweringStatus(text: string): boolean {
+  const flat = text.replace(/\s+/g, " ").trim().replace(/^["']+|["']+$/g, "").trim();
+  return ANSWER_START.test(flat);
+}
+
+export function isContentParaphrase(text: string): boolean {
+  const words = normalize(text).split(" ").filter(Boolean);
+  if (words.length === 0) return false;
+  const index = words.findIndex((word) => PROGRESS_WORDS.has(word));
+  if (index === 0) return false;
+  if (index > 0) return isAdvice(words.join(" "));
+  return true;
+}
+
+export function isRejectedStatus(text: string): boolean {
+  return isTruncatedStatus(text) || isAnsweringStatus(text) || isContentParaphrase(text);
+}
+
+function isAdvice(norm: string): boolean {
+  return (
+    /\b(should|must|ought|shall)\b/.test(norm) ||
+    /\b(need|needs|needed) to\b/.test(norm) ||
+    /\b(recommend|suggest|suggests|consider|prefer|ensure)\b/.test(norm) ||
+    /\bmake sure\b/.test(norm)
+  );
+}
+
+function endsMidWord(token: string): boolean {
+  if (/[0-9./_:`\\]/.test(token)) return false;
+  const segment = token.split(/[—–-]/).pop() ?? "";
+  if (!segment) return true;
+  return unfinishedWord(segment);
+}
+
+function unfinishedWord(segment: string): boolean {
+  if (!/^[A-Za-z][A-Za-z']*$/.test(segment)) return false;
+  const word = segment.toLowerCase().replace(/'/g, "");
+  if (!word) return true;
+  if (KNOWN_SHORT.has(word) || KNOWN_LONG.has(word)) return false;
+  if (word.length >= 6 && COMPLETE_ENDING.test(word)) return false;
+  return true;
+}
+
 export function extractiveSummary(entries: unknown): string {
   const line = progressSummary(entries);
-  return line && !isVagueStatus(line) ? line : "";
+  if (!line || isVagueStatus(line) || isRejectedStatus(line)) return "";
+  return line;
 }
 
 function progressSummary(entries: unknown): string {
@@ -115,23 +232,21 @@ function progressSummary(entries: unknown): string {
 
   const prose = usefulProse(items, users, actions);
   const verbs = phasesOf(actions);
-  if (verbs.length === 0) {
-    const line = prose[prose.length - 1] ?? "";
-    return line ? clipWords(line, 12) : "";
-  }
+  const aim = prose[0] ?? "";
+  if (verbs.length === 0) return aim ? clipWords(aim, 12) : "";
   if (verbs.length === 1) {
-    const line = prose[prose.length - 1];
-    if (line) return clipWords(line, 12);
+    const verb = verbs[0] ?? "Running";
+    if (aim && (prose.length === 1 || proseCovers(aim, verb))) return clipWords(aim, 12);
+    if (aim) return clipWords(`${aim}, ${nowClause(verb, last)}`, 12);
     if (actions.length === 1 && last) {
       const described = describeCall(last);
       if (described) return described;
     }
-    return phaseLabel(verbs[0] ?? "Running");
+    return phaseLabel(verb);
   }
 
   const current = verbs[verbs.length - 1] ?? "Running";
   const earlier = verbs.slice(0, -1);
-  const aim = prose[0] ?? "";
   const now = nowClause(current, last);
   if (aim && coversEarlier(aim, earlier) && proseCovers(aim, current)) return clipWords(aim, 12);
   if (aim && !proseCovers(aim, current)) return clipWords(`${aim}, ${now}`, 12);
@@ -140,6 +255,26 @@ function progressSummary(entries: unknown): string {
 
 export function echoesUserRequest(text: string, entries: unknown): boolean {
   return isParaphraseOfAny(text, progressOf(entries).users);
+}
+
+/** True when the line is only the latest assistant decision and the turn has earlier work. */
+export function echoesLatestClause(text: string, entries: unknown): boolean {
+  const { users, items } = progressOf(entries);
+  const clauses: string[] = [];
+  for (const item of items) {
+    if (item.kind !== "assistant" || !item.prose) continue;
+    const clean = cleanProse(item.prose);
+    if (!clean || isParaphraseOfAny(clean, users)) continue;
+    clauses.push(...splitClauses(clean));
+  }
+  const latest = clauses[clauses.length - 1] ?? "";
+  if (!latest || !sameClause(text, latest)) return false;
+  const earlierClauses = clauses.slice(0, -1);
+  const verbs = phasesOf(concreteActions(actionsOf(items)));
+  if (earlierClauses.length === 0 && verbs.length < 2) return false;
+  if (earlierClauses.some((clause) => sameClause(text, clause))) return false;
+  if (verbs.slice(0, -1).some((verb) => proseCovers(text, verb))) return false;
+  return true;
 }
 
 export function echoesLatestAction(text: string, entries: unknown): boolean {
@@ -217,7 +352,7 @@ function usefulProse(
   for (const item of items) {
     if (item.kind !== "assistant" || !item.prose) continue;
     const clean = cleanProse(item.prose);
-    if (!clean || isParaphraseOfAny(clean, users) || isToolEcho(clean, actions) || isVagueStatus(clean)) continue;
+    if (!clean || isParaphraseOfAny(clean, users) || isToolEcho(clean, actions) || isVagueStatus(clean) || isRejectedStatus(clean)) continue;
     found.push(clean);
   }
   return found;
@@ -225,6 +360,30 @@ function usefulProse(
 
 function cleanProse(text: string): string {
   return stripMarkup(text).replace(/[.!?]+$/g, "").trim();
+}
+
+function splitClauses(text: string): string[] {
+  const parts = text
+    .split(/(?<=[.!?])\s+|\s+[—–]\s+|\s+-\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts : [text];
+}
+
+function sameClause(candidate: string, clause: string): boolean {
+  const left = normalize(candidate);
+  const right = normalize(clause);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const words = significantWords(candidate);
+  const clauseWords = new Set(significantWords(clause));
+  const extra = words.filter((word) => !clauseWords.has(word) && !STATUS_FILLER.has(word));
+  if (left.includes(right) && extra.length > 0) return false;
+  if (right.includes(left) && left.length >= 12 && left.length < right.length) return true;
+  if (words.length < 3) return false;
+  let hits = 0;
+  for (const word of words) if (clauseWords.has(word)) hits += 1;
+  return hits / words.length >= 0.75 && extra.length === 0;
 }
 
 function isToolEcho(prose: string, actions: Action[]): boolean {
@@ -413,7 +572,8 @@ function pairTargets(items: Array<Exclude<Item, { kind: "user" }>>): Array<Exclu
 }
 
 function assistantModelLine(item: Extract<Item, { kind: "assistant" }>, users: string[]): string | undefined {
-  const prose = item.prose && !isParaphraseOfAny(item.prose, users) ? item.prose : "";
+  let prose = item.prose && !isParaphraseOfAny(item.prose, users) ? item.prose : "";
+  if (prose && isRejectedStatus(prose)) prose = "";
   const tools = item.calls
     .map((call) => (call.target ? `[${call.name} ${call.target}]` : `[${call.name}]`))
     .join(" ");
