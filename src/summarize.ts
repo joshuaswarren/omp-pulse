@@ -7,9 +7,10 @@ export type Summary = {
 };
 
 const SYSTEM_PROMPT = [
-  "Write one status line for the coding agent's current progress.",
+  "Write one status line for the agent's overall progress this turn.",
   "Present tense. At most 12 words.",
-  "Name tools, files, the current step, or a blocker shown in the transcript.",
+  "Say the phase, what is already done, and what comes next.",
+  "Summarize across the whole turn. Do not report only the latest tool, file, or command.",
   "The transcript is agent work since the user spoke, not the user's request.",
   "Never restate or paraphrase the user's request.",
   "No quotes, markdown, or advice.",

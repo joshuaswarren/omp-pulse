@@ -53,8 +53,9 @@ test("recent transcript drops older lines when the cap is small", () => {
   assert.match(tail.text, /wrote src\/index\.ts/);
 });
 
-test("extractive summary is the latest tool and file, not the user request", () => {
-  assert.equal(extractiveSummary(entries), "Editing src/index.ts");
+test("extractive summary is the turn's step, not the latest file", () => {
+  assert.equal(extractiveSummary(entries), "Editing the strip");
+  assert.equal(extractiveSummary(entries).includes("src/index.ts"), false);
 });
 
 const OPENING =
@@ -171,7 +172,8 @@ test("assistant and tool progress becomes a progress line", () => {
       },
     },
   ];
-  assert.equal(extractiveSummary(progress), "Editing src/summarize.ts");
+  assert.equal(extractiveSummary(progress), "Updating the summarizer, editing the code");
+  assert.equal(extractiveSummary(progress).includes("src/summarize.ts"), false);
   const tail = recentTranscript(progress, 8_000);
   assert.equal(tail.text.includes("zebra-prompt-token"), false);
   assert.match(tail.text, /assistant: Updating the summarizer\. \[read src\/summarize\.ts\] \[edit src\/summarize\.ts\]/);
@@ -189,6 +191,142 @@ test("assistant and tool progress becomes a progress line", () => {
     },
   ];
   assert.equal(extractiveSummary(pending), "Editing src/text.ts");
+});
+
+test("a turn with many tools summarizes progress, not the last tool", async () => {
+  const many = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token ship a high-level status strip" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Updating the status summary." },
+          { type: "toolCall", name: "read", arguments: { path: "src/summarize.ts" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "read", content: [{ type: "text", text: "prompt text" }] },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "grep", arguments: { pattern: "extractiveSummary", path: "src" } }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "grep", content: [{ type: "text", text: "src/transcript.ts" }] },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "edit", arguments: { path: "src/transcript.ts" } }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "edit", content: "updated src/transcript.ts" },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "bash", arguments: { command: "npm test" } }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "ok" }] },
+    },
+  ];
+
+  assert.equal(extractiveSummary(many), "Updating the status summary, running tests");
+  assert.equal(extractiveSummary(many).includes("zebra-prompt-token"), false);
+  assert.equal(extractiveSummary(many).includes("transcript.ts"), false);
+  assert.equal(extractiveSummary(many).includes("npm test"), false);
+  const tail = recentTranscript(many, 8_000);
+  assert.equal(tail.text.includes("zebra-prompt-token"), false);
+  assert.match(tail.text, /\[read src\/summarize\.ts\]/);
+  assert.match(tail.text, /\[bash npm test\]/);
+
+  const editsOnly = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token touch the files" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "edit", arguments: { path: "src/summarize.ts" } }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "edit", content: "updated src/summarize.ts" },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "edit", arguments: { path: "src/transcript.ts" } }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "edit", content: "updated src/transcript.ts" },
+    },
+  ];
+  assert.equal(extractiveSummary(editsOnly), "Editing the code");
+  assert.equal(extractiveSummary(editsOnly).includes("transcript.ts"), false);
+
+  const bare = many.map((entry) => {
+    if (!entry || typeof entry !== "object" || !("message" in entry)) return entry;
+    const message = entry.message;
+    if (!message || typeof message !== "object" || !("content" in message) || !Array.isArray(message.content)) return entry;
+    const content = message.content.filter(
+      (block) => !(block && typeof block === "object" && "type" in block && block.type === "text"),
+    );
+    return { ...entry, message: { ...message, content } };
+  });
+  assert.equal(extractiveSummary(bare), "Updated the code, now running tests");
+
+  const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
+  const echoed: typeof fetch = async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: "Running npm test" } }] }), { status: 200 });
+  const echo = await runTick({
+    phase: "inTurn",
+    config,
+    entries: many,
+    previousFingerprint: "",
+    force: false,
+    fetchImpl: echoed,
+  });
+  assert.equal(echo.action, "paint");
+  if (echo.action !== "paint") return;
+  assert.equal(echo.source, "extract");
+  assert.equal(echo.line, "pulse · Updating the status summary, running tests");
+  assert.equal(echo.line.includes("zebra-prompt-token"), false);
+
+  const broad: typeof fetch = async () =>
+    new Response(
+      JSON.stringify({ choices: [{ message: { content: "Updating the status summary, running tests" } }] }),
+      { status: 200 },
+    );
+  const kept = await runTick({
+    phase: "inTurn",
+    config,
+    entries: many,
+    previousFingerprint: "",
+    force: false,
+    fetchImpl: broad,
+  });
+  assert.equal(kept.action, "paint");
+  if (kept.action !== "paint") return;
+  assert.equal(kept.source, "model");
+  assert.equal(kept.line, "pulse · Updating the status summary, running tests");
 });
 
 test("a failed tool is a blocker and json arguments still name the command", () => {
@@ -326,7 +464,8 @@ test("summarize posts one chat completion and returns the model line", async () 
     ["system", "user"],
   );
   assert.equal(seen[0]?.body.messages?.[1]?.content, "user: Fix the strip");
-  assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /agent's current progress/);
+  assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /overall progress/);
+  assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /latest tool/);
   assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /Never restate or paraphrase/);
   assert.equal(JSON.stringify(seen[0]?.body).includes("secret-key"), false);
 });
