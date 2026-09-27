@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { paint, STATUS_KEY, statusLine } from "../src/chrome.ts";
+import { isTooLongForStrip, paint, PREFERRED_LINE_CHARS, STATUS_KEY, statusLine } from "../src/chrome.ts";
 import ompPulse from "../src/index.ts";
 import { loadConfig } from "../src/config.ts";
 import { completionsUrl, SMOL_ROLE, summarize, type PulseModelHost, type SmolComplete, type SmolModel } from "../src/summarize.ts";
@@ -823,7 +823,7 @@ test("a latest decision is rejected for a whole-turn rollup", async () => {
   assert.equal(painted.line, `pulse · ${rollup}`);
   assert.equal(painted.line.toLowerCase().includes("widget"), false);
 
-  const broad = smolDouble(() => "Shipping the status strip, read the code, now editing");
+  const broad = smolDouble(() => "Shipping the strip, now editing");
   const kept = await runTick({
     phase: "inTurn",
     config,
@@ -837,8 +837,70 @@ test("a latest decision is rejected for a whole-turn rollup", async () => {
   assert.equal(kept.action, "paint");
   if (kept.action !== "paint") return;
   assert.equal(kept.source, "model");
-  assert.equal(kept.line, "pulse · Shipping the status strip, read the code, now editing");
+  assert.equal(kept.line, "pulse · Shipping the strip, now editing");
   assert.equal(broad.resolved[0], SMOL_ROLE);
+  assert.ok(kept.line.length <= PREFERRED_LINE_CHARS);
+  assert.equal(kept.line.includes("..."), false);
+});
+
+test("a line that does not fit is rewritten instead of cut off", async () => {
+  const bulky = "Editing the status strip, the parser, the widget, the tests, the docs, and the config";
+  assert.equal(isTooLongForStrip(bulky), true);
+  assert.equal(bulky.includes("..."), false);
+
+  const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
+  assert.equal(config.provider.baseUrl, "");
+  const fitted = smolDouble(() => bulky);
+  const painted = await runTick({
+    phase: "inTurn",
+    config,
+    entries,
+    previousFingerprint: "",
+    force: false,
+    host: fitted.host,
+    completeImpl: fitted.completeImpl,
+    fetchImpl: fitted.fetchImpl,
+  });
+  assert.equal(fitted.calls.length, 1);
+  assert.equal(fitted.resolved[0], SMOL_ROLE);
+  assert.match(fitted.calls[0]?.system ?? "", /52 characters/);
+  assert.match(fitted.calls[0]?.system ?? "", /No ellipsis/);
+  assert.equal(painted.action, "paint");
+  if (painted.action !== "paint") return;
+  assert.equal(painted.source, "extract");
+  assert.equal(painted.line, "pulse · Editing the strip");
+  assert.ok(painted.line.length <= PREFERRED_LINE_CHARS);
+  assert.equal(painted.line.includes("..."), false);
+
+  const onlyTodo = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token ship the widget" } },
+    { type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "todo" }] } },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "updated todos" }] },
+    },
+  ];
+  assert.equal(extractiveSummary(onlyTodo), "");
+  const regen = smolDouble((_transcript, call) => (call === 1 ? bulky : "Reviewing open questions"));
+  const recovered = await runTick({
+    phase: "inTurn",
+    config,
+    entries: onlyTodo,
+    previousFingerprint: "",
+    force: false,
+    host: regen.host,
+    completeImpl: regen.completeImpl,
+    fetchImpl: regen.fetchImpl,
+  });
+  assert.equal(regen.calls.length, 2);
+  assert.match(regen.calls[1]?.transcript ?? "", /52 characters/);
+  assert.match(regen.calls[1]?.transcript ?? "", /No ellipsis/);
+  assert.equal(recovered.action, "paint");
+  if (recovered.action !== "paint") return;
+  assert.equal(recovered.source, "model");
+  assert.equal(recovered.line, "pulse · Reviewing open questions");
+  assert.ok(recovered.line.length <= PREFERRED_LINE_CHARS);
+  assert.equal(recovered.line.includes("..."), false);
 });
 
 test("a failed tool is a blocker and json arguments still name the command", () => {
@@ -868,13 +930,20 @@ test("a failed tool is a blocker and json arguments still name the command", () 
   assert.equal(tail.text.includes("zebra-prompt-token"), false);
 });
 
-test("status line is one clipped row", () => {
+test("status line is one glanceable row and never ends in an ellipsis", () => {
   assert.equal(statusLine("editing the strip"), "pulse · editing the strip");
   assert.equal(statusLine("  line\none  "), "pulse · line one");
   assert.equal(statusLine(""), "pulse · idle");
-  const long = statusLine("a".repeat(200));
-  assert.equal(long, `pulse · ${"a".repeat(69)}...`);
-  assert.equal(long.length, "pulse · ".length + 72);
+  const bulky = `Editing ${"the status strip ".repeat(8)}today`;
+  assert.equal(isTooLongForStrip(bulky), true);
+  const long = statusLine(bulky);
+  assert.equal(long.includes("..."), false);
+  assert.equal(long.endsWith("…"), false);
+  assert.ok(long.length <= PREFERRED_LINE_CHARS);
+  const token = statusLine("a".repeat(200));
+  assert.equal(token.includes("..."), false);
+  assert.equal(token, "pulse · idle");
+  assert.ok(token.length <= PREFERRED_LINE_CHARS);
 });
 
 test("missing config uses omp smol and a 7 minute interval", () => {

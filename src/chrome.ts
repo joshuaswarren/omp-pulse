@@ -1,7 +1,8 @@
 import type { Placement, Surface } from "./config.ts";
-import { oneLine } from "./text.ts";
+import { fitStripBody, HARD_LINE_CHARS, PREFERRED_BODY_CHARS, PREFERRED_LINE_CHARS, STATUS_PREFIX } from "./text.ts";
 
 export const STATUS_KEY = "omp-pulse";
+export { PREFERRED_LINE_CHARS, STATUS_PREFIX };
 
 export type ChromeUi = {
   setStatus(key: string, text: string | undefined): void;
@@ -15,9 +16,16 @@ export type ChromeUi = {
   ): void;
 };
 
+export function isTooLongForStrip(body: string): boolean {
+  const flat = body.replace(/\s+/g, " ").trim();
+  if (!flat || flat.endsWith("...") || flat.endsWith("…")) return true;
+  return `${STATUS_PREFIX}${flat}`.length > PREFERRED_LINE_CHARS;
+}
+
 export function statusLine(body: string): string {
-  const clean = oneLine(body, 72);
-  return clean ? `pulse · ${clean}` : "pulse · idle";
+  const clean = fitStripBody(body, PREFERRED_BODY_CHARS);
+  const line = clean ? `${STATUS_PREFIX}${clean}` : `${STATUS_PREFIX}idle`;
+  return line.length <= HARD_LINE_CHARS ? line : `${STATUS_PREFIX}idle`;
 }
 
 export function paint(
@@ -58,7 +66,7 @@ function clearWidget(ui: ChromeUi): void {
 
 function themeLine(theme: { fg?: (token: string, text: string) => string }, line: string): string {
   if (typeof theme.fg !== "function") return line;
-  const mark = "pulse · ";
+  const mark = STATUS_PREFIX;
   if (!line.startsWith(mark)) return theme.fg("text", line);
   return theme.fg("accent", "pulse") + theme.fg("dim", " · ") + theme.fg("text", line.slice(mark.length));
 }

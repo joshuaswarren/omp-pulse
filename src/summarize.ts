@@ -1,5 +1,5 @@
 import type { ProviderConfig } from "./config.ts";
-import { clipWords } from "./text.ts";
+import { limitWords } from "./text.ts";
 
 /** omp model role for the cheap one-line rewrite. `ctx.models.resolve` expands `modelRoles.smol`. */
 export const SMOL_ROLE = "@smol";
@@ -47,7 +47,9 @@ export type Summary = {
 
 const SYSTEM_PROMPT = [
   "Write one status line for the agent's overall progress this turn.",
-  "Present tense. At most 12 words.",
+  "Present tense. At most 12 words and 52 characters.",
+  "The painted strip is pulse, a dot, and this line, and must stay within 60 characters.",
+  "No ellipsis. Never end with three dots.",
   "Roll up the entire current turn: the goal, the phase, what is done, what is in flight, and what comes next.",
   "Summarize across the whole turn. Do not report only the latest decision, the latest assistant sentence, the latest tool, file, or command.",
   "Name a concrete object. Never answer with a bare status verb or a tool name alone.",
@@ -198,7 +200,7 @@ function cleanModelText(raw: string): string {
     text = text.slice(1, -1).trim();
   }
   text = text.replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim();
-  return clipWords(text, 12);
+  return limitWords(text, 12);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
