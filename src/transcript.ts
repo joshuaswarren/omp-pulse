@@ -155,14 +155,14 @@ const DANGLING_END = new Set(
     .filter(Boolean),
 );
 
-/** Words of at most 5 letters that can end a finished status line. Longer tokens use a suffix check. */
+/** Words of at most 5 letters that can end a finished status line. Longer tokens use a suffix check. Hanging particles such as just and only are left out. */
 const KNOWN_SHORT = new Set(
   `ok ui ux id js ts ai os py sh go rb vm ip io qa pr ci cd db api url uri css git src npm pnpm yarn bun node bash grep glob
    cli gui tui sdk mcp llm ide sql ssh http json yaml yml html omp pid env tmp log err csv svg png jpg pdf xml jwt key
    add all any app args back base best bin body both bug bump busy call cargo check code col data debug deps diff
    docs done draft each edit end error fail fails feat file files find fix flag form full get good grep head help high
-   hook host idle index info init issue just last left less lib line lines lint list lock log logs main make map mock
-   mode model more name new next node note notes now null old only open opts out pass patch path phase pid pkg
+   hook host idle index info init issue last left less lib line lines lint list lock log logs main make map mock
+   mode model more name new next node note notes now null old open opts out pass patch path phase pid pkg
    port pulse put read real ref repo rev role row run runs same set sha ship show site smol spec src state step stub
    strip style suite sync tab test tests text theme timer todo tool tools tree true turn type unit user ver view wait warn watch
    word words work write yaml yes yet`

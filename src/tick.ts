@@ -30,6 +30,8 @@ function retryNote(bodyChars: number): string {
     "Do not answer Running checks, Running tests, Running todo, Working, Processing, Thinking, Updating, Busy, Loading, In progress, or Doing stuff.",
     "Do not start with Yes, No, Sure, or Okay.",
     "Do not stop mid-word, mid-phrase, or on a dash.",
+    "Do not return an unfinished clause or a cut-off transcript fragment.",
+    "Rewrite one finished whole-turn rollup.",
     "Do not give advice or restate draft content about the topic.",
     "Do not repeat only the latest decision or the latest assistant sentence.",
     "Roll up the whole turn: goal, phase, done, in flight, and next.",

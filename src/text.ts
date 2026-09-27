@@ -7,6 +7,7 @@ export const PREFERRED_BODY_CHARS = PREFERRED_LINE_CHARS - STATUS_PREFIX.length;
 const CUT_WORDS = new Set([
   "a", "an", "the", "and", "or", "but", "nor", "so", "to", "of", "for", "with",
   "on", "in", "at", "by", "from", "into", "as", "that", "if", "when",
+  "just", "only",
 ]);
 
 export function oneLine(text: string, max: number): string {
