@@ -1,7 +1,7 @@
 import type { PulseConfig } from "./config.ts";
 import { statusLine } from "./chrome.ts";
 import { summarize } from "./summarize.ts";
-import { extractiveSummary, recentTranscript } from "./transcript.ts";
+import { echoesUserRequest, extractiveSummary, recentTranscript } from "./transcript.ts";
 
 export type Phase = "idle" | "inTurn";
 
@@ -42,12 +42,15 @@ export async function runTick(input: {
   if (decision === "skip") return { action: "skip" };
 
   const fallback = extractiveSummary(input.entries) || (input.phase === "inTurn" ? "working" : "idle");
-  const summary = await summarize({
+  let summary = await summarize({
     transcript: tail.text,
     fallback,
     provider: input.config.provider,
     fetchImpl: input.fetchImpl,
   });
+  if (summary.source === "model" && echoesUserRequest(summary.text, input.entries)) {
+    summary = { text: fallback, source: "extract" };
+  }
   return {
     action: "paint",
     line: statusLine(summary.text),

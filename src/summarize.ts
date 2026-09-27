@@ -1,4 +1,5 @@
 import type { ProviderConfig } from "./config.ts";
+import { clipWords } from "./text.ts";
 
 export type Summary = {
   text: string;
@@ -6,10 +7,13 @@ export type Summary = {
 };
 
 const SYSTEM_PROMPT = [
-  "Summarize the coding-session transcript as one status line.",
+  "Write one status line for the coding agent's current progress.",
   "Present tense. At most 12 words.",
+  "Name tools, files, the current step, or a blocker shown in the transcript.",
+  "The transcript is agent work since the user spoke, not the user's request.",
+  "Never restate or paraphrase the user's request.",
   "No quotes, markdown, or advice.",
-  "Describe only what the transcript shows is happening.",
+  "If the transcript shows no agent progress, answer: working",
 ].join(" ");
 
 export async function summarize(input: {
@@ -89,7 +93,8 @@ function cleanModelText(raw: string): string {
   ) {
     text = text.slice(1, -1).trim();
   }
-  return text;
+  text = text.replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim();
+  return clipWords(text, 12);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

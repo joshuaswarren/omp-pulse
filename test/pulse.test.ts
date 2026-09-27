@@ -37,11 +37,11 @@ const entries = [
   "not-an-entry",
 ];
 
-test("recent transcript keeps the newest user and assistant text and drops thinking", () => {
+test("recent transcript keeps assistant and tool progress and drops the user prompt", () => {
   const tail = recentTranscript(entries, 8_000);
-  assert.match(tail.text, /user: Fix the status strip/);
+  assert.equal(tail.text.includes("Fix the status strip"), false);
   assert.match(tail.text, /assistant: Editing the strip\. \[write\]/);
-  assert.match(tail.text, /tool: write: wrote src\/index\.ts/);
+  assert.match(tail.text, /tool: write src\/index\.ts: wrote src\/index\.ts/);
   assert.equal(tail.text.includes("plan the widget"), false);
   assert.equal(tail.text.includes("ignore me"), false);
   assert.equal(tail.fingerprint, tail.text);
@@ -53,11 +53,169 @@ test("recent transcript drops older lines when the cap is small", () => {
   assert.match(tail.text, /wrote src\/index\.ts/);
 });
 
-test("extractive summary is the latest user request and assistant line", () => {
-  assert.equal(
-    extractiveSummary(entries),
-    "Fix the status strip so i... → Editing the strip. [write]",
-  );
+test("extractive summary is the latest tool and file, not the user request", () => {
+  assert.equal(extractiveSummary(entries), "Editing src/index.ts");
+});
+
+const OPENING =
+  "zebra-prompt-token: make the status strip restate this opening request about agent progress and the mid-turn summary.";
+
+test("a user-heavy transcript does not yield a prompt paraphrase", async () => {
+  const heavy = [
+    {
+      type: "custom_message",
+      customType: "skill-prompt",
+      attribution: "user",
+      display: false,
+      content: `${OPENING} Follow the skill and paraphrase the user's prompt in the status strip.`,
+    },
+    {
+      type: "message",
+      message: { role: "user", content: OPENING },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: `I will ${OPENING}` }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "bashExecution", command: "echo hi", output: "hi", exitCode: 0 },
+    },
+  ];
+  assert.equal(extractiveSummary(heavy), "");
+  const tail = recentTranscript(heavy, 8_000);
+  assert.equal(tail.text.includes("zebra-prompt-token"), false);
+  assert.equal(tail.text.includes("paraphrase the user's prompt"), false);
+
+  const withTool = [
+    ...heavy,
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: `I will ${OPENING}` },
+          { type: "toolCall", name: "write", arguments: { path: "src/transcript.ts", content: "export {}" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "write",
+        content: [{ type: "text", text: "Successfully wrote 20 bytes to src/transcript.ts" }],
+      },
+    },
+  ];
+  assert.equal(extractiveSummary(withTool), "Editing src/transcript.ts");
+  const progressTail = recentTranscript(withTool, 8_000);
+  assert.equal(progressTail.text.includes("zebra-prompt-token"), false);
+  assert.match(progressTail.text, /write src\/transcript\.ts/);
+
+  const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
+  let sent = "";
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    sent = String(init?.body);
+    return new Response(JSON.stringify({ choices: [{ message: { content: OPENING } }] }), { status: 200 });
+  };
+  const turn = await runTick({
+    phase: "inTurn",
+    config,
+    entries: withTool,
+    previousFingerprint: "",
+    force: false,
+    fetchImpl,
+  });
+  assert.equal(sent.includes("zebra-prompt-token"), false);
+  assert.equal(turn.action, "paint");
+  if (turn.action !== "paint") return;
+  assert.equal(turn.line.includes("zebra-prompt-token"), false);
+  assert.equal(turn.line, "pulse · Editing src/transcript.ts");
+  assert.equal(turn.source, "extract");
+});
+
+test("assistant and tool progress becomes a progress line", () => {
+  const progress = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token ship the strip" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "look at summarize.ts" },
+          { type: "text", text: "Updating the summarizer." },
+          { type: "toolCall", name: "read", arguments: { path: "src/summarize.ts" } },
+          { type: "tool_use", name: "edit", input: { path: "src/summarize.ts" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "read",
+        content: [{ type: "text", text: "export const SYSTEM_PROMPT = ..." }],
+      },
+    },
+    {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "edit",
+        isError: false,
+        content: "updated src/summarize.ts",
+      },
+    },
+  ];
+  assert.equal(extractiveSummary(progress), "Editing src/summarize.ts");
+  const tail = recentTranscript(progress, 8_000);
+  assert.equal(tail.text.includes("zebra-prompt-token"), false);
+  assert.match(tail.text, /assistant: Updating the summarizer\. \[read src\/summarize\.ts\] \[edit src\/summarize\.ts\]/);
+  assert.match(tail.text, /tool: edit src\/summarize\.ts/);
+  assert.equal(tail.text.includes("look at summarize"), false);
+
+  const pending = [
+    { type: "message", message: { role: "user", content: "do the thing" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "write", arguments: { path: "[src/text.ts#Ab12]", content: "x" } }],
+      },
+    },
+  ];
+  assert.equal(extractiveSummary(pending), "Editing src/text.ts");
+});
+
+test("a failed tool is a blocker and json arguments still name the command", () => {
+  const failed = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token run the tests" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "bash", arguments: "{\"command\":\"npm test\"}" }],
+      },
+    },
+    {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "bash",
+        isError: true,
+        content: [{ type: "text", text: "npm test exited 1" }],
+      },
+    },
+  ];
+  assert.equal(extractiveSummary(failed), "Blocked on bash npm test");
+  const tail = recentTranscript(failed, 8_000);
+  assert.match(tail.text, /\[bash npm test\]/);
+  assert.match(tail.text, /failed/);
+  assert.equal(tail.text.includes("zebra-prompt-token"), false);
 });
 
 test("status line is one clipped row", () => {
@@ -168,7 +326,33 @@ test("summarize posts one chat completion and returns the model line", async () 
     ["system", "user"],
   );
   assert.equal(seen[0]?.body.messages?.[1]?.content, "user: Fix the strip");
+  assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /agent's current progress/);
+  assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /Never restate or paraphrase/);
   assert.equal(JSON.stringify(seen[0]?.body).includes("secret-key"), false);
+});
+
+test("a long model line is clipped to 12 words", async () => {
+  const fetchImpl: typeof fetch = async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen",
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  const summary = await summarize({
+    transcript: "assistant: editing src/transcript.ts",
+    fallback: "working",
+    provider: { baseUrl: "http://127.0.0.1:11434/v1", model: "qwen2.5:0.5b", apiKey: "", timeoutMs: 1_000 },
+    fetchImpl,
+  });
+  assert.equal(summary.source, "model");
+  assert.equal(summary.text, "one two three four five six seven eight nine ten eleven twelve");
 });
 
 test("a down model or a non-http endpoint keeps the local extract", async () => {
