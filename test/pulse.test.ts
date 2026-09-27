@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { paint, STATUS_KEY, statusLine } from "../src/chrome.ts";
+import ompPulse from "../src/index.ts";
 import { loadConfig } from "../src/config.ts";
-import { completionsUrl, summarize } from "../src/summarize.ts";
+import { completionsUrl, SMOL_ROLE, summarize, type PulseModelHost, type SmolComplete, type SmolModel } from "../src/summarize.ts";
 import { runTick } from "../src/tick.ts";
 import { extractiveSummary, isVagueStatus, recentTranscript } from "../src/transcript.ts";
 
@@ -36,6 +37,61 @@ const entries = [
   null,
   "not-an-entry",
 ];
+
+const SMOL_MODEL: SmolModel = { provider: "test", id: "smol-role" };
+
+type SmolCall = {
+  transcript: string;
+  system: string;
+  apiKey: unknown;
+  maxTokens?: number;
+  disableReasoning?: boolean;
+  model: SmolModel;
+};
+
+function smolDouble(
+  reply: (transcript: string, call: number) => string,
+  options?: { model?: SmolModel | undefined; apiKey?: string | undefined },
+) {
+  const resolved: string[] = [];
+  const keys: SmolModel[] = [];
+  const calls: SmolCall[] = [];
+  const model = options && "model" in options ? options.model : SMOL_MODEL;
+  const apiKey = options && "apiKey" in options ? options.apiKey : "resolved-key";
+  const host: PulseModelHost = {
+    models: {
+      resolve(spec: string) {
+        resolved.push(spec);
+        return spec === SMOL_ROLE ? model : undefined;
+      },
+    },
+    modelRegistry: {
+      async getApiKey(seen: SmolModel) {
+        keys.push(seen);
+        return apiKey;
+      },
+      resolver(seen: SmolModel) {
+        return `resolver:${seen.provider}/${seen.id}`;
+      },
+    },
+  };
+  const completeImpl: SmolComplete = async (seen, context, completeOptions) => {
+    const transcript = context.messages[0]?.content ?? "";
+    calls.push({
+      transcript,
+      system: context.systemPrompt?.[0] ?? "",
+      apiKey: completeOptions?.apiKey,
+      maxTokens: completeOptions?.maxTokens,
+      disableReasoning: completeOptions?.disableReasoning,
+      model: seen,
+    });
+    return { stopReason: "stop", content: [{ type: "text", text: reply(transcript, calls.length) }] };
+  };
+  const fetchImpl: typeof fetch = async () => {
+    throw new Error("default summarizer must not fetch");
+  };
+  return { host, completeImpl, calls, resolved, keys, fetchImpl };
+}
 
 test("recent transcript keeps assistant and tool progress and drops the user prompt", () => {
   const tail = recentTranscript(entries, 8_000);
@@ -118,20 +174,19 @@ test("a user-heavy transcript does not yield a prompt paraphrase", async () => {
   assert.match(progressTail.text, /write src\/transcript\.ts/);
 
   const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
-  let sent = "";
-  const fetchImpl: typeof fetch = async (_url, init) => {
-    sent = String(init?.body);
-    return new Response(JSON.stringify({ choices: [{ message: { content: OPENING } }] }), { status: 200 });
-  };
+  const smol = smolDouble(() => OPENING);
   const turn = await runTick({
     phase: "inTurn",
     config,
     entries: withTool,
     previousFingerprint: "",
     force: false,
-    fetchImpl,
+    host: smol.host,
+    completeImpl: smol.completeImpl,
+    fetchImpl: smol.fetchImpl,
   });
-  assert.equal(sent.includes("zebra-prompt-token"), false);
+  assert.equal(smol.resolved[0], SMOL_ROLE);
+  assert.equal(smol.calls[0]?.transcript.includes("zebra-prompt-token"), false);
   assert.equal(turn.action, "paint");
   if (turn.action !== "paint") return;
   assert.equal(turn.line.includes("zebra-prompt-token"), false);
@@ -294,15 +349,16 @@ test("a turn with many tools summarizes progress, not the last tool", async () =
   assert.equal(extractiveSummary(bare), "Updated the code, now running tests");
 
   const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
-  const echoed: typeof fetch = async () =>
-    new Response(JSON.stringify({ choices: [{ message: { content: "Running npm test" } }] }), { status: 200 });
+  const echoed = smolDouble(() => "Running npm test");
   const echo = await runTick({
     phase: "inTurn",
     config,
     entries: many,
     previousFingerprint: "",
     force: false,
-    fetchImpl: echoed,
+    host: echoed.host,
+    completeImpl: echoed.completeImpl,
+    fetchImpl: echoed.fetchImpl,
   });
   assert.equal(echo.action, "paint");
   if (echo.action !== "paint") return;
@@ -310,18 +366,16 @@ test("a turn with many tools summarizes progress, not the last tool", async () =
   assert.equal(echo.line, "pulse · Updating the status summary, running tests");
   assert.equal(echo.line.includes("zebra-prompt-token"), false);
 
-  const broad: typeof fetch = async () =>
-    new Response(
-      JSON.stringify({ choices: [{ message: { content: "Updating the status summary, running tests" } }] }),
-      { status: 200 },
-    );
+  const broad = smolDouble(() => "Updating the status summary, running tests");
   const kept = await runTick({
     phase: "inTurn",
     config,
     entries: many,
     previousFingerprint: "",
     force: false,
-    fetchImpl: broad,
+    host: broad.host,
+    completeImpl: broad.completeImpl,
+    fetchImpl: broad.fetchImpl,
   });
   assert.equal(kept.action, "paint");
   if (kept.action !== "paint") return;
@@ -393,20 +447,18 @@ test("vague status lines are rejected and a trailing todo stays off the strip", 
   assert.equal(extractiveSummary(turn).includes("zebra-prompt-token"), false);
 
   const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
-  let calls = 0;
-  const echoed: typeof fetch = async () => {
-    calls += 1;
-    return new Response(JSON.stringify({ choices: [{ message: { content: "Running todo" } }] }), { status: 200 });
-  };
+  const echoed = smolDouble(() => "Running todo");
   const painted = await runTick({
     phase: "inTurn",
     config,
     entries: turn,
     previousFingerprint: "",
     force: false,
-    fetchImpl: echoed,
+    host: echoed.host,
+    completeImpl: echoed.completeImpl,
+    fetchImpl: echoed.fetchImpl,
   });
-  assert.equal(calls, 1);
+  assert.equal(echoed.calls.length, 1);
   assert.equal(painted.action, "paint");
   if (painted.action !== "paint") return;
   assert.equal(painted.source, "extract");
@@ -425,41 +477,35 @@ test("vague status lines are rejected and a trailing todo stays off the strip", 
     },
   ];
   assert.equal(extractiveSummary(onlyTodo), "");
-  let retries = 0;
-  let retryNote = "";
-  const regen: typeof fetch = async (_url, init) => {
-    retries += 1;
-    const body = JSON.parse(String(init?.body)) as { messages?: { content?: string }[] };
-    const transcript = body.messages?.[1]?.content ?? "";
-    if (retries === 2) retryNote = transcript;
-    const content = retries === 1 ? "Doing stuff" : "Reviewing open questions";
-    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
-  };
+  const regen = smolDouble((_transcript, call) => (call === 1 ? "Doing stuff" : "Reviewing open questions"));
   const recovered = await runTick({
     phase: "inTurn",
     config,
     entries: onlyTodo,
     previousFingerprint: "",
     force: false,
-    fetchImpl: regen,
+    host: regen.host,
+    completeImpl: regen.completeImpl,
+    fetchImpl: regen.fetchImpl,
   });
-  assert.equal(retries, 2);
-  assert.match(retryNote, /Rejected as vague/);
+  assert.equal(regen.calls.length, 2);
+  assert.match(regen.calls[1]?.transcript ?? "", /Rejected as vague/);
   assert.equal(recovered.action, "paint");
   if (recovered.action !== "paint") return;
   assert.equal(recovered.source, "model");
   assert.equal(recovered.line, "pulse · Reviewing open questions");
   assert.equal(recovered.line.includes("zebra-prompt-token"), false);
 
-  const stuck: typeof fetch = async () =>
-    new Response(JSON.stringify({ choices: [{ message: { content: "Working" } }] }), { status: 200 });
+  const stuck = smolDouble(() => "Working");
   const skipped = await runTick({
     phase: "inTurn",
     config,
     entries: onlyTodo,
     previousFingerprint: "",
     force: false,
-    fetchImpl: stuck,
+    host: stuck.host,
+    completeImpl: stuck.completeImpl,
+    fetchImpl: stuck.fetchImpl,
   });
   assert.deepEqual(skipped, { action: "skip" });
 });
@@ -500,15 +546,19 @@ test("status line is one clipped row", () => {
   assert.equal(long.length, "pulse · ".length + 72);
 });
 
-test("missing config uses the local model and a 7 minute interval", () => {
+test("missing config uses omp smol and a 7 minute interval", () => {
   const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
   assert.equal(config.intervalMs, 420_000);
   assert.equal(config.refreshWhileIdle, false);
   assert.equal(config.surface, "widget");
   assert.equal(config.placement, "belowEditor");
-  assert.equal(config.provider.baseUrl, "http://127.0.0.1:11434/v1");
-  assert.equal(config.provider.model, "qwen2.5:0.5b");
+  assert.equal(config.provider.baseUrl, "");
+  assert.equal(config.provider.model, "");
   assert.equal(config.provider.apiKey, "");
+  const packed = JSON.stringify(config).toLowerCase();
+  assert.equal(packed.includes("ollama"), false);
+  assert.equal(packed.includes("11434"), false);
+  assert.equal(packed.includes("qwen"), false);
 });
 
 test("env overrides the config file and bad values clamp", () => {
@@ -521,7 +571,7 @@ test("env overrides the config file and bad values clamp", () => {
       refreshWhileIdle: false,
       surface: "widget",
       placement: "aboveEditor",
-      provider: { baseUrl: "http://127.0.0.1:11434/v1/", model: "from-file", apiKey: "file-key" },
+      provider: { baseUrl: "http://file.internal/v1/", model: "from-file", apiKey: "file-key" },
     }),
   );
   try {
@@ -532,7 +582,7 @@ test("env overrides the config file and bad values clamp", () => {
         OMP_PULSE_IDLE: "true",
         OMP_PULSE_SURFACE: "status",
         OMP_PULSE_BASE_URL: "http://fleet.internal:8000/v1",
-        OMP_PULSE_MODEL: "qwen2.5-0.5b",
+        OMP_PULSE_MODEL: "fleet-nano",
         OMP_PULSE_API_KEY: "fleet-key",
       },
     });
@@ -541,7 +591,7 @@ test("env overrides the config file and bad values clamp", () => {
     assert.equal(config.surface, "status");
     assert.equal(config.placement, "aboveEditor");
     assert.equal(config.provider.baseUrl, "http://fleet.internal:8000/v1");
-    assert.equal(config.provider.model, "qwen2.5-0.5b");
+    assert.equal(config.provider.model, "fleet-nano");
     assert.equal(config.provider.apiKey, "fleet-key");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -563,7 +613,34 @@ test("surface both stays available and an unknown surface falls back to widget",
   }
 });
 
-test("summarize posts one chat completion and returns the model line", async () => {
+test("default summarize resolves smol and does not fetch", async () => {
+  const smol = smolDouble(() => '"Editing the status strip"');
+  const summary = await summarize({
+    transcript: "assistant: Editing the strip",
+    fallback: "local extract",
+    provider: { baseUrl: "", model: "", apiKey: "", timeoutMs: 5_000 },
+    host: smol.host,
+    completeImpl: smol.completeImpl,
+    fetchImpl: smol.fetchImpl,
+  });
+
+  assert.equal(summary.source, "model");
+  assert.equal(summary.text, "Editing the status strip");
+  assert.deepEqual(smol.resolved, [SMOL_ROLE]);
+  assert.equal(smol.keys[0], SMOL_MODEL);
+  assert.equal(smol.calls.length, 1);
+  assert.equal(smol.calls[0]?.model, SMOL_MODEL);
+  assert.equal(smol.calls[0]?.apiKey, "resolver:test/smol-role");
+  assert.equal(smol.calls[0]?.maxTokens, 60);
+  assert.equal(smol.calls[0]?.disableReasoning, true);
+  assert.equal(smol.calls[0]?.transcript, "assistant: Editing the strip");
+  assert.match(smol.calls[0]?.system ?? "", /overall progress/);
+  assert.match(smol.calls[0]?.system ?? "", /latest tool/);
+  assert.match(smol.calls[0]?.system ?? "", /Never restate or paraphrase/);
+  assert.match(smol.calls[0]?.system ?? "", /Running todo/);
+});
+
+test("an opt-in provider posts one chat completion and returns the model line", async () => {
   const seen: { url: string; headers: Record<string, string>; body: { model?: string; messages?: { role: string; content: string }[] } }[] = [];
   const fetchImpl: typeof fetch = async (url, init) => {
     const headers = new Headers(init?.headers);
@@ -580,62 +657,111 @@ test("summarize posts one chat completion and returns the model line", async () 
       status: 200,
     });
   };
+  const smol = smolDouble(() => {
+    throw new Error("opt-in provider must not call smol");
+  });
 
   const summary = await summarize({
     transcript: "user: Fix the strip",
     fallback: "local extract",
-    provider: { baseUrl: "http://127.0.0.1:11434/v1", model: "qwen2.5:0.5b", apiKey: "secret-key", timeoutMs: 5_000 },
+    provider: { baseUrl: "https://fleet.example/v1", model: "fleet-nano", apiKey: "secret-key", timeoutMs: 5_000 },
+    host: smol.host,
+    completeImpl: smol.completeImpl,
     fetchImpl,
   });
 
   assert.equal(summary.source, "model");
   assert.equal(summary.text, "Editing the status strip");
+  assert.equal(smol.resolved.length, 0);
   assert.equal(seen.length, 1);
-  assert.equal(seen[0]?.url, "http://127.0.0.1:11434/v1/chat/completions");
+  assert.equal(seen[0]?.url, "https://fleet.example/v1/chat/completions");
   assert.equal(seen[0]?.headers.authorization, "Bearer secret-key");
-  assert.equal(seen[0]?.body.model, "qwen2.5:0.5b");
+  assert.equal(seen[0]?.body.model, "fleet-nano");
   assert.deepEqual(
     seen[0]?.body.messages?.map((message) => message.role),
     ["system", "user"],
   );
   assert.equal(seen[0]?.body.messages?.[1]?.content, "user: Fix the strip");
   assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /overall progress/);
-  assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /latest tool/);
-  assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /Never restate or paraphrase/);
-  assert.match(seen[0]?.body.messages?.[0]?.content ?? "", /Running todo/);
   assert.equal(JSON.stringify(seen[0]?.body).includes("secret-key"), false);
 });
 
-test("a long model line is clipped to 12 words", async () => {
-  const fetchImpl: typeof fetch = async () =>
-    new Response(
-      JSON.stringify({
-        choices: [
-          {
-            message: {
-              content: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen",
-            },
-          },
-        ],
-      }),
-      { status: 200 },
-    );
+test("a long smol line is clipped to 12 words", async () => {
+  const smol = smolDouble(
+    () => "one two three four five six seven eight nine ten eleven twelve thirteen fourteen",
+  );
   const summary = await summarize({
     transcript: "assistant: editing src/transcript.ts",
     fallback: "working",
-    provider: { baseUrl: "http://127.0.0.1:11434/v1", model: "qwen2.5:0.5b", apiKey: "", timeoutMs: 1_000 },
-    fetchImpl,
+    provider: { baseUrl: "", model: "", apiKey: "", timeoutMs: 1_000 },
+    host: smol.host,
+    completeImpl: smol.completeImpl,
   });
   assert.equal(summary.source, "model");
   assert.equal(summary.text, "one two three four five six seven eight nine ten eleven twelve");
 });
 
-test("a down model or a non-http endpoint keeps the local extract", async () => {
+test("a missing smol model, empty key, or failed complete keeps the local extract", async () => {
+  const unresolved = smolDouble(() => "should not run", { model: undefined });
+  const missing = await summarize({
+    transcript: "assistant: Editing the strip",
+    fallback: "Editing the strip",
+    provider: { baseUrl: "", model: "", apiKey: "", timeoutMs: 1_000 },
+    host: unresolved.host,
+    completeImpl: unresolved.completeImpl,
+    fetchImpl: unresolved.fetchImpl,
+  });
+  assert.deepEqual(missing, { text: "Editing the strip", source: "extract" });
+  assert.equal(unresolved.calls.length, 0);
+
+  const noKey = smolDouble(() => "should not run", { apiKey: undefined });
+  const locked = await summarize({
+    transcript: "assistant: Editing the strip",
+    fallback: "Editing the strip",
+    provider: { baseUrl: "", model: "", apiKey: "", timeoutMs: 1_000 },
+    host: noKey.host,
+    completeImpl: noKey.completeImpl,
+  });
+  assert.deepEqual(locked, { text: "Editing the strip", source: "extract" });
+  assert.equal(noKey.calls.length, 0);
+
+  const failed = smolDouble(() => "");
+  const empty = await summarize({
+    transcript: "assistant: Editing the strip",
+    fallback: "Editing the strip",
+    provider: { baseUrl: "", model: "", apiKey: "", timeoutMs: 1_000 },
+    host: failed.host,
+    completeImpl: async () => {
+      throw new Error("smol down");
+    },
+  });
+  assert.deepEqual(empty, { text: "Editing the strip", source: "extract" });
+
+  const errored = await summarize({
+    transcript: "assistant: Editing the strip",
+    fallback: "Editing the strip",
+    provider: { baseUrl: "", model: "", apiKey: "", timeoutMs: 1_000 },
+    host: failed.host,
+    completeImpl: async () => ({ stopReason: "error", errorMessage: "nope", content: [] }),
+  });
+  assert.deepEqual(errored, { text: "Editing the strip", source: "extract" });
+
+  const blank = await summarize({
+    transcript: "assistant: Editing the strip",
+    fallback: "Editing the strip",
+    provider: { baseUrl: "", model: "", apiKey: "", timeoutMs: 1_000 },
+    host: failed.host,
+    completeImpl: failed.completeImpl,
+  });
+  assert.deepEqual(blank, { text: "Editing the strip", source: "extract" });
+});
+
+test("a down opt-in endpoint or a non-http url keeps the local extract", async () => {
   const fetchImpl: typeof fetch = async () => new Response("nope", { status: 503 });
   const failed = await summarize({
     transcript: "user: Fix the strip",
     fallback: "Fix the strip → editing",
-    provider: { baseUrl: "http://127.0.0.1:11434/v1", model: "qwen2.5:0.5b", apiKey: "", timeoutMs: 1_000 },
+    provider: { baseUrl: "https://fleet.example/v1", model: "fleet-nano", apiKey: "", timeoutMs: 1_000 },
     fetchImpl,
   });
   assert.deepEqual(failed, { text: "Fix the strip → editing", source: "extract" });
@@ -656,15 +782,9 @@ test("a down model or a non-http endpoint keeps the local extract", async () => 
   assert.equal(completionsUrl("file:///tmp/pulse"), undefined);
 });
 
-test("an in-turn tick paints the model line and an idle tick does not call the model", async () => {
+test("an in-turn tick paints the smol line and an idle tick does not call smol", async () => {
   const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
-  let calls = 0;
-  const fetchImpl: typeof fetch = async () => {
-    calls += 1;
-    return new Response(JSON.stringify({ choices: [{ message: { content: "Editing the status strip" } }] }), {
-      status: 200,
-    });
-  };
+  const smol = smolDouble(() => "Editing the status strip");
 
   const idle = await runTick({
     phase: "idle",
@@ -672,10 +792,12 @@ test("an in-turn tick paints the model line and an idle tick does not call the m
     entries,
     previousFingerprint: "",
     force: false,
-    fetchImpl,
+    host: smol.host,
+    completeImpl: smol.completeImpl,
+    fetchImpl: smol.fetchImpl,
   });
   assert.deepEqual(idle, { action: "skip" });
-  assert.equal(calls, 0);
+  assert.equal(smol.calls.length, 0);
 
   const turn = await runTick({
     phase: "inTurn",
@@ -683,13 +805,16 @@ test("an in-turn tick paints the model line and an idle tick does not call the m
     entries,
     previousFingerprint: "",
     force: false,
-    fetchImpl,
+    host: smol.host,
+    completeImpl: smol.completeImpl,
+    fetchImpl: smol.fetchImpl,
   });
   assert.equal(turn.action, "paint");
   if (turn.action !== "paint") return;
   assert.equal(turn.line, "pulse · Editing the status strip");
   assert.equal(turn.source, "model");
-  assert.equal(calls, 1);
+  assert.equal(smol.calls.length, 1);
+  assert.equal(smol.resolved[0], SMOL_ROLE);
 
   const repeat = await runTick({
     phase: "inTurn",
@@ -697,10 +822,12 @@ test("an in-turn tick paints the model line and an idle tick does not call the m
     entries,
     previousFingerprint: turn.fingerprint,
     force: false,
-    fetchImpl,
+    host: smol.host,
+    completeImpl: smol.completeImpl,
+    fetchImpl: smol.fetchImpl,
   });
   assert.deepEqual(repeat, { action: "skip" });
-  assert.equal(calls, 1);
+  assert.equal(smol.calls.length, 1);
 
   const idleRefresh = await runTick({
     phase: "idle",
@@ -708,12 +835,14 @@ test("an in-turn tick paints the model line and an idle tick does not call the m
     entries,
     previousFingerprint: "",
     force: false,
-    fetchImpl,
+    host: smol.host,
+    completeImpl: smol.completeImpl,
+    fetchImpl: smol.fetchImpl,
   });
   assert.equal(idleRefresh.action, "paint");
   if (idleRefresh.action !== "paint") return;
   assert.equal(idleRefresh.line, "pulse · Editing the status strip");
-  assert.equal(calls, 2);
+  assert.equal(smol.calls.length, 2);
 
   const forced = await runTick({
     phase: "idle",
@@ -721,10 +850,12 @@ test("an in-turn tick paints the model line and an idle tick does not call the m
     entries,
     previousFingerprint: turn.fingerprint,
     force: true,
-    fetchImpl,
+    host: smol.host,
+    completeImpl: smol.completeImpl,
+    fetchImpl: smol.fetchImpl,
   });
   assert.equal(forced.action, "paint");
-  assert.equal(calls, 3);
+  assert.equal(smol.calls.length, 3);
 });
 
 type WidgetContent =
@@ -810,4 +941,71 @@ test("widget-only paint falls back to status when the widget surface throws", ()
   };
   paint(ui, { surface: "widget", placement: "aboveEditor" }, "pulse · editing the strip");
   assert.equal(status, "pulse · editing the strip");
+});
+
+test("a live tick passes ctx into smol resolve and getApiKey", async () => {
+  const resolved: string[] = [];
+  const keys: SmolModel[] = [];
+  let painted = "";
+  type HostHandler = (event: unknown, ctx: {
+    ui: {
+      setStatus: () => void;
+      setWidget: (
+        key: string,
+        content: ((tui: unknown, theme: { fg?: (token: string, text: string) => string }) => { render: () => string[] }) | undefined,
+      ) => void;
+    };
+    sessionManager: { getBranch: () => unknown };
+    setInterval: () => unknown;
+    clearTimer: () => void;
+    models: { resolve: (spec: string) => SmolModel };
+    modelRegistry: { getApiKey: (model: SmolModel) => Promise<string> };
+  }) => void | Promise<void>;
+  const handlers = new Map<string, HostHandler>();
+  ompPulse({
+    on(event, handler) {
+      handlers.set(event, handler as HostHandler);
+    },
+    registerCommand() {},
+  });
+  const model: SmolModel = { provider: "test", id: "smol-role" };
+  const ctx = {
+    ui: {
+      setStatus() {},
+      setWidget(
+        _key: string,
+        content: ((tui: unknown, theme: { fg?: (token: string, text: string) => string }) => { render: () => string[] }) | undefined,
+      ) {
+        if (typeof content !== "function") return;
+        painted = content(null, { fg: (_token, text) => text }).render().join("");
+      },
+    },
+    sessionManager: { getBranch: () => entries },
+    setInterval() {
+      return 1;
+    },
+    clearTimer() {},
+    models: {
+      resolve(spec: string) {
+        resolved.push(spec);
+        return model;
+      },
+    },
+    modelRegistry: {
+      async getApiKey(seen: SmolModel) {
+        keys.push(seen);
+        return "resolved-key";
+      },
+    },
+  };
+  await handlers.get("session_start")?.({}, ctx);
+  await handlers.get("turn_start")?.({}, ctx);
+  await handlers.get("turn_end")?.({}, ctx);
+  const deadline = Date.now() + 2_000;
+  while (resolved.length === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.deepEqual(resolved, [SMOL_ROLE]);
+  assert.deepEqual(keys, [model]);
+  assert.equal(painted, "pulse · Editing the strip");
 });

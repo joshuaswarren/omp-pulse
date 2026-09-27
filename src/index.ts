@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { paint, STATUS_KEY, statusLine, type ChromeUi } from "./chrome.ts";
 import { DEFAULT_CONFIG_PATH, loadConfig, type PulseConfig } from "./config.ts";
+import { type PulseModelHost } from "./summarize.ts";
 import { extractiveSummary, isVagueStatus } from "./transcript.ts";
 import { runTick, type Phase } from "./tick.ts";
 
@@ -9,7 +10,7 @@ type PulseUi = ChromeUi & {
   notify?(message: string, type?: "info" | "warning" | "error"): void;
 };
 
-type PulseHost = {
+type PulseHost = PulseModelHost & {
   ui: PulseUi;
   sessionManager?: { getBranch?: () => unknown };
   setInterval?: (fn: () => void, ms: number) => unknown;
@@ -90,6 +91,7 @@ export default function ompPulse(pi: PiApi): void {
         entries: readEntries(),
         previousFingerprint,
         force: forced,
+        host: host ?? undefined,
       });
       if (result.action === "paint" && host) {
         if (result.source === "model") previousFingerprint = result.fingerprint;
