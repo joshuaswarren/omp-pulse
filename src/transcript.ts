@@ -76,6 +76,15 @@ const VAGUE_LINES = new Set([
   "still working",
   "still thinking",
   "making progress",
+  "running checks",
+  "running check",
+  "running tests",
+  "running test",
+  "running stuff",
+  "running things",
+  "running thing",
+  "running work",
+  "running progress",
 ]);
 
 const BARE_STATUS = new Set([
@@ -94,9 +103,44 @@ const BOOKKEEPING = new Set([
   "taskcreate", "taskupdate", "tasklist", "taskwrite",
 ]);
 
+/** Modifiers that can sit in front of a bare "running …" line without naming a target. */
+const RUNNING_MODIFIER = new Set([
+  "still", "currently", "just", "now", "again", "really", "actually", "simply",
+]);
+
+/** Nouns that do not name a target. "Running" plus only these is as vague as "Running todo". */
+const RUNNING_FILLER = new Set([
+  "check", "checks", "test", "tests",
+  "todo", "todos", "todowrite", "todoread", "task", "tasks",
+  "stuff", "thing", "things", "work", "progress",
+  "step", "steps", "tool", "tools", "item", "items",
+  "something", "anything", "update", "updates", "info",
+  "code", "file", "files", "request",
+]);
+
+function isBareRunning(norm: string): boolean {
+  const words = norm.split(" ").filter((word) => word.length >= 3 && !STOP.has(word));
+  let sawRunning = false;
+  let sawFiller = false;
+  for (const word of words) {
+    if (word === "running") {
+      sawRunning = true;
+      continue;
+    }
+    if (RUNNING_MODIFIER.has(word)) continue;
+    if (RUNNING_FILLER.has(word)) {
+      sawFiller = true;
+      continue;
+    }
+    return false;
+  }
+  return sawRunning && sawFiller;
+}
+
 export function isVagueStatus(text: string): boolean {
   const norm = normalize(text);
   if (!norm || VAGUE_LINES.has(norm)) return true;
+  if (isBareRunning(norm)) return true;
   const words = norm.split(" ").filter((word) => word.length >= 3 && !STOP.has(word));
   if (words.length === 0) return true;
   return words.every((word) => BARE_STATUS.has(word));
@@ -237,10 +281,14 @@ function progressSummary(entries: unknown): string {
   if (verbs.length === 1) {
     const verb = verbs[0] ?? "Running";
     if (aim && (prose.length === 1 || proseCovers(aim, verb))) return clipWords(aim, 12);
-    if (aim) return clipWords(`${aim}, ${nowClause(verb, last)}`, 12);
+    if (aim) return withNow(aim, nowClause(verb, last));
     if (actions.length === 1 && last) {
       const described = describeCall(last);
-      if (described) return described;
+      if (described && !isVagueStatus(described)) return described;
+    }
+    if (verb === "Running" && last?.target) {
+      const described = describeCall(last);
+      if (described && !isVagueStatus(described)) return described;
     }
     return phaseLabel(verb);
   }
@@ -249,8 +297,14 @@ function progressSummary(entries: unknown): string {
   const earlier = verbs.slice(0, -1);
   const now = nowClause(current, last);
   if (aim && coversEarlier(aim, earlier) && proseCovers(aim, current)) return clipWords(aim, 12);
-  if (aim && !proseCovers(aim, current)) return clipWords(`${aim}, ${now}`, 12);
+  if (aim && !proseCovers(aim, current)) return withNow(aim, now);
+  if (!now) return clipWords(doneClause(earlier), 12);
   return clipWords(`${doneClause(earlier)}, now ${now}`, 12);
+}
+
+function withNow(lead: string, now: string): string {
+  if (!now) return clipWords(lead, 12);
+  return clipWords(`${lead}, ${now}`, 12);
 }
 
 export function echoesUserRequest(text: string, entries: unknown): boolean {
@@ -429,7 +483,8 @@ function phaseLabel(verb: string): string {
   if (verb === "Editing") return "Editing the code";
   if (verb === "Reading") return "Reading the code";
   if (verb === "Searching") return "Searching the code";
-  if (verb === "Running") return "Running checks";
+  // A generic Running phase has no target. Leave the extract empty so smol can roll the turn up.
+  if (verb === "Running") return "";
   return "Continuing the change";
 }
 
@@ -440,7 +495,7 @@ function nowClause(verb: string, action: Action | undefined): string {
       return "running tests";
     }
     if (action?.target) return `running ${action.target}`;
-    return "running checks";
+    return "";
   }
   if (verb === "Editing") return "editing the code";
   if (verb === "Reading") return "reading the code";

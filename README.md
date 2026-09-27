@@ -17,7 +17,7 @@ The strip reads the session branch omp already keeps and asks omp's **smol** mod
 
 `surface: "both"` paints the same `pulse · …` line with `setWidget` and `setStatus`, so the strip shows up twice. That mode stays available for anyone who wants both chrome slots, and it is usually the wrong setting for a live smoke test. The default is `widget`, which leaves the native statusline for git, model, and context.
 
-On turn start the line is a local extract of progress since the latest user message: what is done, what is in flight, and what is next. It summarizes the turn, so a string of tool calls does not collapse to the last file or command. Vague lines with no object, such as "Running todo" or "Working", are discarded. So are lines that stop mid-word or mid-phrase, lines that answer with Yes, No, Sure, or Okay, lines that paraphrase the topic (advice or draft content), and lines that are only the latest decision or assistant clause. The line that remains is a rollup of the whole turn: the goal, the phase, what is done, what is in flight, and what is next. It stays glanceable, within 60 characters, and is rewritten shorter when it does not fit. It is never cut off with an ellipsis. A blocker still surfaces when the latest real step failed. That extract, and the tail sent to the model, leave out the opening user message, so the line does not restate the prompt. Smol rewrites it on the timer (default 7 minutes) and again when the turn ends, if that progress changed. `/pulse` refreshes on demand.
+On turn start the line is a local extract of progress since the latest user message: what is done, what is in flight, and what is next. It summarizes the turn, so a string of tool calls does not collapse to the last file or command. Vague lines with no object, such as "Running checks", "Running tests", "Running todo", or "Working", are discarded. A generic Running phase with no command or path does not become the strip; smol rolls the turn up instead. So are lines that stop mid-word or mid-phrase, lines that answer with Yes, No, Sure, or Okay, lines that paraphrase the topic (advice or draft content), and lines that are only the latest decision or assistant clause. The line that remains is a rollup of the whole turn: the goal, the phase, what is done, what is in flight, and what is next. It stays glanceable, within 60 characters, and is rewritten shorter when it does not fit. It is never cut off with an ellipsis. A blocker still surfaces when the latest real step failed. That extract, and the tail sent to the model, leave out the opening user message, so the line does not restate the prompt. Smol rewrites it on the timer (default 7 minutes) and again when the turn ends, if that progress changed. `/pulse` refreshes on demand.
 
 The in-flight token stream is not on the branch until omp records the message. The strip summarizes persisted session messages, not a second queue.
 
@@ -77,6 +77,9 @@ Environment overrides:
 | `OMP_PULSE_MODEL` | `provider.model` |
 | `OMP_PULSE_API_KEY` | `provider.apiKey` |
 | `OMP_PULSE_TIMEOUT_MS` | `provider.timeoutMs` |
+| `OMP_PULSE_SHOW_VERSION` | When `1` or `true`, the strip is `pulse · <version> · <body>`. The version is read from `package.json`. The body budget shrinks so the row stays within 60 characters. |
+
+`/pulse` always includes that version in its notice (`omp-pulse <version> · <line>`), even when `OMP_PULSE_SHOW_VERSION` is off.
 
 ### Smol
 

@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { isTooLongForStrip, paint, PREFERRED_LINE_CHARS, STATUS_KEY, statusLine } from "../src/chrome.ts";
+import { isTooLongForStrip, paint, preferredBodyBudget, PREFERRED_LINE_CHARS, pulseNotice, STATUS_KEY, statusLine } from "../src/chrome.ts";
 import ompPulse from "../src/index.ts";
 import { loadConfig } from "../src/config.ts";
 import { completionsUrl, SMOL_ROLE, summarize, type PulseModelHost, type SmolComplete, type SmolModel } from "../src/summarize.ts";
 import { runTick } from "../src/tick.ts";
+import { PULSE_VERSION } from "../src/version.ts";
 import {
   echoesLatestClause,
   extractiveSummary,
@@ -405,10 +406,23 @@ test("vague status lines are rejected and a trailing todo stays off the strip", 
     "Doing stuff",
     "Running todowrite",
     "Doing things",
+    "Running checks",
+    "running checks",
+    "Running tests",
+    "running test",
+    "still running checks",
+    "running the checks",
+    "running stuff",
+    "running things",
+    "running work",
+    "running progress",
+    "now running tasks",
   ]) {
     assert.equal(isVagueStatus(line), true, line);
   }
   assert.equal(isVagueStatus("Updating the status summary, editing the code"), false);
+  assert.equal(isVagueStatus("Running npm test"), false);
+  assert.equal(isVagueStatus("running pytest tests/test_pulse.py"), false);
   assert.equal(isVagueStatus("Editing src/transcript.ts"), false);
   assert.equal(isVagueStatus("Blocked on bash npm test"), false);
 
@@ -1408,4 +1422,227 @@ test("a live tick passes ctx into smol resolve and getApiKey", async () => {
   assert.deepEqual(resolved, [SMOL_ROLE]);
   assert.deepEqual(keys, [model]);
   assert.equal(painted, "pulse · Editing the strip");
+});
+
+test("a generic Running phase does not paint Running checks", async () => {
+  const generic = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token ship the strip" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Running checks" }, { type: "toolCall", name: "bash" }],
+      },
+    },
+  ];
+  assert.equal(extractiveSummary(generic), "");
+  assert.equal(extractiveSummary(generic).toLowerCase().includes("running checks"), false);
+
+  const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
+  const vague = smolDouble(() => "Running checks");
+  const skipped = await runTick({
+    phase: "inTurn",
+    config,
+    entries: generic,
+    previousFingerprint: "",
+    force: false,
+    host: vague.host,
+    completeImpl: vague.completeImpl,
+    fetchImpl: vague.fetchImpl,
+  });
+  assert.equal(vague.calls.length, 2);
+  assert.match(vague.calls[1]?.transcript ?? "", /Running checks/);
+  assert.match(vague.calls[1]?.transcript ?? "", /Running tests/);
+  assert.deepEqual(skipped, { action: "skip" });
+
+  const rolled = smolDouble(() => "Shipping the status strip");
+  const painted = await runTick({
+    phase: "inTurn",
+    config,
+    entries: generic,
+    previousFingerprint: "",
+    force: false,
+    host: rolled.host,
+    completeImpl: rolled.completeImpl,
+    fetchImpl: rolled.fetchImpl,
+  });
+  assert.equal(painted.action, "paint");
+  if (painted.action !== "paint") return;
+  assert.equal(painted.source, "model");
+  assert.equal(painted.line, "pulse · Shipping the status strip");
+  assert.equal(painted.line.toLowerCase().includes("running checks"), false);
+
+  const targeted = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token run the suite" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "bash", arguments: { command: "npm test" } }],
+      },
+    },
+  ];
+  assert.equal(extractiveSummary(targeted), "Running npm test");
+  assert.equal(extractiveSummary(targeted).toLowerCase().includes("running checks"), false);
+  assert.equal(isVagueStatus(extractiveSummary(targeted)), false);
+
+  const several = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token run the suite" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "bash", arguments: { command: "npm test" } }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "ok" }] },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "bash", arguments: { command: "npm run typecheck" } }],
+      },
+    },
+  ];
+  assert.equal(extractiveSummary(several), "Running npm run typecheck");
+  assert.equal(extractiveSummary(several).toLowerCase().includes("running checks"), false);
+});
+
+test("version comes from package.json and the strip budget shrinks when it is shown", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+  assert.equal(PULSE_VERSION, pkg.version);
+  assert.equal(PULSE_VERSION, "0.1.6");
+
+  const missing = join(tmpdir(), "omp-pulse-missing.json");
+  assert.equal(loadConfig({ configPath: missing, env: {} }).showVersion, false);
+  assert.equal(loadConfig({ configPath: missing, env: { OMP_PULSE_SHOW_VERSION: "1" } }).showVersion, true);
+  assert.equal(loadConfig({ configPath: missing, env: { OMP_PULSE_SHOW_VERSION: "true" } }).showVersion, true);
+  assert.equal(loadConfig({ configPath: missing, env: { OMP_PULSE_SHOW_VERSION: "TRUE" } }).showVersion, true);
+  assert.equal(loadConfig({ configPath: missing, env: { OMP_PULSE_SHOW_VERSION: "0" } }).showVersion, false);
+  assert.equal(loadConfig({ configPath: missing, env: { OMP_PULSE_SHOW_VERSION: "false" } }).showVersion, false);
+
+  const shown = statusLine("editing the strip", { showVersion: true });
+  assert.equal(shown, `pulse · ${PULSE_VERSION} · editing the strip`);
+  assert.ok(shown.length <= PREFERRED_LINE_CHARS);
+  assert.equal(shown.includes("..."), false);
+  const hidden = statusLine("editing the strip");
+  assert.equal(hidden, "pulse · editing the strip");
+  assert.equal(hidden.includes(PULSE_VERSION), false);
+
+  const bulky = "Updating the status summary before running tests";
+  const plain = statusLine(bulky);
+  const fitted = statusLine(bulky, { showVersion: true });
+  const plainBody = plain.slice("pulse · ".length);
+  const mark = `pulse · ${PULSE_VERSION} · `;
+  const fittedBody = fitted.slice(mark.length);
+  const budget = preferredBodyBudget({ showVersion: true });
+  assert.ok(plainBody.length > budget);
+  assert.ok(fittedBody.length <= budget);
+  assert.ok(fittedBody.length < plainBody.length);
+  assert.equal(fitted.includes("..."), false);
+  assert.ok(fitted.length <= PREFERRED_LINE_CHARS);
+  assert.equal(isTooLongForStrip(plainBody), false);
+  assert.equal(isTooLongForStrip(plainBody, { showVersion: true }), true);
+  assert.equal(pulseNotice(hidden), `omp-pulse ${PULSE_VERSION} · ${hidden}`);
+
+  const { ui, widgets } = recordingUi();
+  paint(ui, { surface: "widget", placement: "belowEditor" }, shown);
+  assert.deepEqual(widgets[0]?.lines, [`{accent}pulse{dim} · {text}${PULSE_VERSION} · editing the strip`]);
+});
+
+type PulseCommand = (args: string | undefined, ctx: ReturnType<typeof commandHost>) => Promise<void>;
+
+function commandHost(branch: unknown, notices: string[], painted: string[]) {
+  return {
+    ui: {
+      setStatus() {},
+      setWidget(
+        _key: string,
+        content: ((tui: unknown, theme: { fg?: (token: string, text: string) => string }) => { render: () => string[] }) | undefined,
+      ) {
+        if (typeof content !== "function") return;
+        painted.push(content(null, { fg: (_token, text) => text }).render().join(""));
+      },
+      notify(message: string) {
+        notices.push(message);
+      },
+    },
+    sessionManager: { getBranch: () => branch },
+    setInterval() {
+      return 1;
+    },
+    clearTimer() {},
+  };
+}
+
+function registerPulse(showVersion: string | undefined): PulseCommand {
+  const previous = process.env.OMP_PULSE_SHOW_VERSION;
+  if (showVersion === undefined) delete process.env.OMP_PULSE_SHOW_VERSION;
+  else process.env.OMP_PULSE_SHOW_VERSION = showVersion;
+  let command: PulseCommand | undefined;
+  const handlers = new Map<string, (event: unknown, ctx: ReturnType<typeof commandHost>) => void | Promise<void>>();
+  ompPulse({
+    on(event, handler) {
+      handlers.set(event, handler as (event: unknown, ctx: ReturnType<typeof commandHost>) => void | Promise<void>);
+    },
+    registerCommand(_name, options) {
+      command = options.handler as PulseCommand;
+    },
+  });
+  if (previous === undefined) delete process.env.OMP_PULSE_SHOW_VERSION;
+  else process.env.OMP_PULSE_SHOW_VERSION = previous;
+  if (!command) throw new Error("pulse command was not registered");
+  return Object.assign(command, { start: handlers.get("session_start") });
+}
+
+test("/pulse notice includes the package version when the strip hides it", async () => {
+  const notices: string[] = [];
+  const painted: string[] = [];
+  const command = registerPulse(undefined);
+  const ctx = commandHost(entries, notices, painted);
+  await command("", ctx);
+  assert.equal(painted.at(-1), "pulse · Editing the strip");
+  assert.equal(notices[0], `omp-pulse ${PULSE_VERSION} · pulse · Editing the strip`);
+});
+
+test("OMP_PULSE_SHOW_VERSION paints the version and /pulse still names it", async () => {
+  const notices: string[] = [];
+  const painted: string[] = [];
+  const command = registerPulse("true");
+  const ctx = commandHost(entries, notices, painted);
+  const start = (command as PulseCommand & { start?: (event: unknown, ctx: ReturnType<typeof commandHost>) => void }).start;
+  await start?.({}, ctx);
+  assert.equal(painted.at(-1), `pulse · ${PULSE_VERSION} · Editing the strip`);
+  await command("", ctx);
+  assert.equal(notices[0], `omp-pulse ${PULSE_VERSION} · pulse · ${PULSE_VERSION} · Editing the strip`);
+  assert.ok((painted.at(-1) ?? "").length <= PREFERRED_LINE_CHARS);
+
+  const config = loadConfig({
+    configPath: join(tmpdir(), "omp-pulse-missing.json"),
+    env: { OMP_PULSE_SHOW_VERSION: "1" },
+  });
+  const generic = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token ship the strip" } },
+    {
+      type: "message",
+      message: { role: "assistant", content: [{ type: "toolCall", name: "bash" }] },
+    },
+  ];
+  const budget = preferredBodyBudget({ showVersion: true });
+  const vague = smolDouble(() => "Running checks");
+  await runTick({
+    phase: "inTurn",
+    config,
+    entries: generic,
+    previousFingerprint: "",
+    force: false,
+    host: vague.host,
+    completeImpl: vague.completeImpl,
+    fetchImpl: vague.fetchImpl,
+  });
+  assert.match(vague.calls[0]?.system ?? "", new RegExp(`${budget} characters`));
+  assert.match(vague.calls[1]?.transcript ?? "", new RegExp(`at most ${budget} characters`));
 });

@@ -20,6 +20,8 @@ export type PulseConfig = {
   surface: Surface;
   placement: Placement;
   maxTranscriptChars: number;
+  /** `OMP_PULSE_SHOW_VERSION=1` or `true`. Paints `pulse · <version> · <body>`. */
+  showVersion: boolean;
   provider: ProviderConfig;
 };
 
@@ -40,6 +42,7 @@ export function loadConfig(options?: { configPath?: string; env?: NodeJS.Process
     surface: surfaceFrom(env.OMP_PULSE_SURFACE, file.surface),
     placement: placementFrom(env.OMP_PULSE_PLACEMENT, file.placement),
     maxTranscriptChars: clamp(numberFrom(env.OMP_PULSE_MAX_CHARS, file.maxTranscriptChars, 8_000), 500, 32_000),
+    showVersion: boolFrom(env.OMP_PULSE_SHOW_VERSION, undefined, false),
     provider: {
       baseUrl: stripSlash(stringFrom(env.OMP_PULSE_BASE_URL, providerFile.baseUrl, "")),
       model: stringFrom(env.OMP_PULSE_MODEL, providerFile.model, ""),

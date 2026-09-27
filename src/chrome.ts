@@ -1,5 +1,6 @@
 import type { Placement, Surface } from "./config.ts";
-import { fitStripBody, HARD_LINE_CHARS, PREFERRED_BODY_CHARS, PREFERRED_LINE_CHARS, STATUS_PREFIX } from "./text.ts";
+import { fitStripBody, HARD_LINE_CHARS, PREFERRED_LINE_CHARS, STATUS_PREFIX } from "./text.ts";
+import { PULSE_VERSION } from "./version.ts";
 
 export const STATUS_KEY = "omp-pulse";
 export { PREFERRED_LINE_CHARS, STATUS_PREFIX };
@@ -16,16 +17,36 @@ export type ChromeUi = {
   ): void;
 };
 
-export function isTooLongForStrip(body: string): boolean {
-  const flat = body.replace(/\s+/g, " ").trim();
-  if (!flat || flat.endsWith("...") || flat.endsWith("…")) return true;
-  return `${STATUS_PREFIX}${flat}`.length > PREFERRED_LINE_CHARS;
+export type StripOptions = {
+  showVersion?: boolean;
+};
+
+/** `pulse · ` or `pulse · <version> · ` when the version tell is on. */
+export function stripMark(options?: StripOptions): string {
+  if (!options?.showVersion) return STATUS_PREFIX;
+  return `${STATUS_PREFIX}${PULSE_VERSION} · `;
 }
 
-export function statusLine(body: string): string {
-  const clean = fitStripBody(body, PREFERRED_BODY_CHARS);
-  const line = clean ? `${STATUS_PREFIX}${clean}` : `${STATUS_PREFIX}idle`;
-  return line.length <= HARD_LINE_CHARS ? line : `${STATUS_PREFIX}idle`;
+export function preferredBodyBudget(options?: StripOptions): number {
+  return Math.max(0, PREFERRED_LINE_CHARS - stripMark(options).length);
+}
+
+export function isTooLongForStrip(body: string, options?: StripOptions): boolean {
+  const flat = body.replace(/\s+/g, " ").trim();
+  if (!flat || flat.endsWith("...") || flat.endsWith("…")) return true;
+  return `${stripMark(options)}${flat}`.length > PREFERRED_LINE_CHARS;
+}
+
+export function statusLine(body: string, options?: StripOptions): string {
+  const mark = stripMark(options);
+  const clean = fitStripBody(body, preferredBodyBudget(options));
+  const line = clean ? `${mark}${clean}` : `${mark}idle`;
+  return line.length <= HARD_LINE_CHARS ? line : `${mark}idle`;
+}
+
+/** `/pulse` notice. Always names the package version, even when the strip hides it. */
+export function pulseNotice(line: string): string {
+  return `omp-pulse ${PULSE_VERSION} · ${line}`;
 }
 
 export function paint(
