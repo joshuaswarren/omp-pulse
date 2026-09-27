@@ -755,6 +755,160 @@ test("truncated answers and topic paraphrases stay off the strip", async () => {
   assert.deepEqual(prior, { action: "skip" });
 });
 
+test("a mid-cut clause is a structural reject and smol is told to rewrite it", async () => {
+  const midCut = "the recurrence text I set on the issue just";
+  const dressed = "Updated the recurrence text I set on the issue just";
+  assert.equal(isTruncatedStatus(midCut), true);
+  assert.equal(isRejectedStatus(midCut), true);
+  assert.equal(isContentParaphrase(dressed), false);
+  assert.equal(isTruncatedStatus(dressed), true);
+  assert.equal(isRejectedStatus(dressed), true);
+
+  for (const line of [
+    "Checked the recurrence text I set on the issue just",
+    "Editing the parser and",
+    "Shipping the widget to",
+    "Read the notes of",
+    "Open the issue the",
+    "the files I",
+    "Editing the widget only",
+  ]) {
+    assert.equal(isTruncatedStatus(line), true, line);
+  }
+
+  for (const good of [
+    "Updating the status summary, running tests",
+    "Editing the strip",
+    "Editing the code",
+    "Blocked on bash npm test",
+    "Reviewing open questions",
+    "Read the code, now editing the code",
+    "Editing src/transcript.ts",
+    "Shipping the strip, now editing",
+    "Running npm test",
+  ]) {
+    assert.equal(isTruncatedStatus(good), false, good);
+    assert.equal(isRejectedStatus(good), false, good);
+    assert.equal(isVagueStatus(good), false, good);
+  }
+
+  const sources = ["../src/transcript.ts", "../src/summarize.ts", "../src/tick.ts", "../src/text.ts"]
+    .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+    .join("\n");
+  assert.equal(sources.includes(midCut), false);
+  assert.equal(sources.includes(dressed), false);
+
+  const work = [
+    {
+      type: "message",
+      message: { role: "user", content: "zebra-prompt-token set the recurrence text on the issue" },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: midCut },
+          { type: "toolCall", name: "read", arguments: { path: "src/chrome.ts" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "read", content: [{ type: "text", text: "widget" }] },
+    },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "edit", arguments: { path: "src/transcript.ts" } }],
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "edit", content: "updated src/transcript.ts" },
+    },
+  ];
+  assert.equal(extractiveSummary(work), "Read the code, now editing the code");
+  assert.equal(extractiveSummary(work).includes("recurrence"), false);
+  assert.equal(extractiveSummary(work).endsWith("just"), false);
+
+  const config = loadConfig({ configPath: join(tmpdir(), "omp-pulse-missing.json"), env: {} });
+  const cut = smolDouble(() => midCut);
+  const painted = await runTick({
+    phase: "inTurn",
+    config,
+    entries: work,
+    previousFingerprint: "",
+    force: false,
+    host: cut.host,
+    completeImpl: cut.completeImpl,
+    fetchImpl: cut.fetchImpl,
+  });
+  assert.equal(cut.calls.length, 1);
+  assert.equal(cut.resolved[0], SMOL_ROLE);
+  assert.match(cut.calls[0]?.system ?? "", /finished clause/);
+  assert.match(cut.calls[0]?.system ?? "", /rewrite a shorter complete line/);
+  assert.match(cut.calls[0]?.system ?? "", /transcript fragment/);
+  assert.match(cut.calls[0]?.system ?? "", /hanging word/);
+  assert.match(cut.calls[0]?.system ?? "", /entire current turn/);
+  assert.match(cut.calls[0]?.system ?? "", /No ellipsis/);
+  assert.equal(painted.action, "paint");
+  if (painted.action !== "paint") return;
+  assert.equal(painted.source, "extract");
+  assert.equal(painted.line, "pulse · Read the code, now editing the code");
+  assert.equal(painted.line.includes("recurrence"), false);
+  assert.equal(painted.line.endsWith("just"), false);
+
+  const dressedCut = smolDouble(() => dressed);
+  const fromDressed = await runTick({
+    phase: "inTurn",
+    config,
+    entries: work,
+    previousFingerprint: "",
+    force: false,
+    host: dressedCut.host,
+    completeImpl: dressedCut.completeImpl,
+    fetchImpl: dressedCut.fetchImpl,
+  });
+  assert.equal(fromDressed.action, "paint");
+  if (fromDressed.action !== "paint") return;
+  assert.equal(fromDressed.source, "extract");
+  assert.equal(fromDressed.line.includes("just"), false);
+
+  const onlyTodo = [
+    { type: "message", message: { role: "user", content: "zebra-prompt-token ship the widget" } },
+    { type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "todo" }] } },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "updated todos" }] },
+    },
+  ];
+  assert.equal(extractiveSummary(onlyTodo), "");
+  const rewritten = smolDouble((_transcript, call) => (call === 1 ? midCut : "Reviewing open questions"));
+  const recovered = await runTick({
+    phase: "inTurn",
+    config,
+    entries: onlyTodo,
+    previousFingerprint: "",
+    force: false,
+    host: rewritten.host,
+    completeImpl: rewritten.completeImpl,
+    fetchImpl: rewritten.fetchImpl,
+  });
+  assert.equal(rewritten.calls.length, 2);
+  assert.match(rewritten.calls[0]?.system ?? "", /finished clause/);
+  assert.match(rewritten.calls[1]?.transcript ?? "", /unfinished clause/);
+  assert.match(rewritten.calls[1]?.transcript ?? "", /Rewrite one finished/);
+  assert.match(rewritten.calls[1]?.transcript ?? "", /No ellipsis/);
+  assert.equal(recovered.action, "paint");
+  if (recovered.action !== "paint") return;
+  assert.equal(recovered.source, "model");
+  assert.equal(recovered.line, "pulse · Reviewing open questions");
+  assert.equal(recovered.line.includes("recurrence"), false);
+  assert.equal(rewritten.resolved[0], SMOL_ROLE);
+});
+
 test("a latest decision is rejected for a whole-turn rollup", async () => {
   const latest = "Keeping the widget below the editor";
   const turn = [
@@ -1514,7 +1668,7 @@ test("a generic Running phase does not paint Running checks", async () => {
 test("version comes from package.json and the strip budget shrinks when it is shown", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
   assert.equal(PULSE_VERSION, pkg.version);
-  assert.equal(PULSE_VERSION, "0.1.6");
+  assert.equal(PULSE_VERSION, "0.1.7");
 
   const missing = join(tmpdir(), "omp-pulse-missing.json");
   assert.equal(loadConfig({ configPath: missing, env: {} }).showVersion, false);
