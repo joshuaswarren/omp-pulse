@@ -128,10 +128,34 @@ npm run typecheck
 
 ## Publish
 
-The package name on npm is `omp-pulse`. From a checkout, with an npm account that can publish it:
+The package name on npm is `omp-pulse`. GitHub Actions publishes it with npm Trusted Publishing (OIDC). The workflow authenticates with the job's OIDC token. There is no npm token in repository secrets.
+
+1. Bump `version` in `package.json` (semver).
+2. Commit that change on main: `chore: release vX.Y.Z`.
+3. Tag and push. The tag must match the `package.json` version, with a leading `v`:
 
 ```sh
-npm publish --access public
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
+
+4. `.github/workflows/publish.yml` checks out that tag on a GitHub-hosted runner, installs dependencies, runs `npm test` and `npm run typecheck`, then runs `npm publish --access public`. Authentication is the workflow's OIDC token. Provenance is attached automatically.
+5. Fleet and installers:
+
+```sh
+omp plugin install omp-pulse
+```
+
+`omp plugin install omp-pulse@latest` follows the newest release. Pin a release with `omp plugin install omp-pulse@X.Y.Z`. Re-run install to move a machine; there is no separate update command.
+
+6. Before the first tag publish succeeds, an operator adds a Trusted Publisher on npmjs.com (package settings → Trusted Publisher):
+
+   - Provider: GitHub Actions
+   - Repository: `joshuaswarren/omp-pulse`
+   - Workflow filename: `publish.yml` (the filename only, not `.github/workflows/publish.yml`)
+   - Allowed action: direct `npm publish`
+
+Publishers created after 3 Sep 2026 default to staged publish (`npm stage publish`) only. This workflow calls `npm publish`, so the publisher has to allow that action. npm does not check the configuration when you save it; a mismatch shows up as `ENEEDAUTH` or `E404` on the first publish.
+
+Pushing the `v*` tag is how a release is cut. Publishing a GitHub Release starts the same workflow. If that release points at a tag whose version is already on npm, the second run fails because npm rejects the duplicate version.
 
 The `pi.extensions` field points at `./src/index.ts`, which is the layout omp loads for `omp plugin install`.
