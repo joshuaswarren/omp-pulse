@@ -1,5 +1,7 @@
 # omp-pulse
 
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink)](https://github.com/sponsors/joshuaswarren)
+
 One line of transcript status in the [omp](https://github.com/can1357/oh-my-pi) TUI, refreshed on a timer while a turn is running.
 
 The strip reads the session branch omp already keeps and asks omp's **smol** model role (`modelRoles.smol`) for a single line. By default it paints that line once, with `setWidget` (`belowEditor`). It does not send a prompt, steer, follow-up, or aside into the live turn.
@@ -150,3 +152,11 @@ Publishers created after 3 Sep 2026 default to staged publish (`npm stage publis
 Pushing the `v*` tag is how a release is cut. Publishing a GitHub Release starts the same workflow. If that release points at a tag whose version is already on npm, the second run fails because npm rejects the duplicate version.
 
 The `pi.extensions` field points at `./src/index.ts`, which is the layout omp loads for `omp plugin install`.
+
+## Support
+
+Every bit of support helps keep omp-pulse alive and free. If you are able, [sponsor on GitHub](https://github.com/sponsors/joshuaswarren) or send a Lightning donation to `joshuaswarren@strike.me` to directly fund continued development and new integrations.
+
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?style=for-the-badge)](https://github.com/sponsors/joshuaswarren)
+
+If financial support is not an option, you can still make a big difference: [star the repo](https://github.com/joshuaswarren/omp-pulse), share it, or recommend it to a colleague. Word of mouth is how most people find omp-pulse.
