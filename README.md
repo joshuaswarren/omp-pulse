@@ -23,6 +23,8 @@ On turn start, the extension tries to show a local extract of progress since the
 
 The in-flight token stream is not on the branch until omp records the message. The strip reads recorded branch entries, not a second token queue. It omits direct user-message text from the model payload, but assistant prose and tool output can repeat that text or contain sensitive data.
 
+Start with [installation](#install), then see [configuration](#config), [status meanings](#what-the-status-means) or [troubleshooting](#troubleshooting).
+
 ## Install
 
 ```sh
@@ -37,12 +39,31 @@ omp plugin link /path/to/omp-pulse
 
 `package.json` declares Node 20 or newer. The host must load TypeScript extensions and provide the session/UI/model APIs used here. Managed timers (`ctx.setInterval` with `ctx.clearTimer`) are preferred; if `setInterval` is absent, the extension uses an unref'ed native timer. The release workflow uses Node 24; its test command relies on `--experimental-strip-types`, which is not available on Node 20. The engine declaration alone does not establish compatibility with every Node/omp combination.
 
+### First use
+
+1. Run `omp plugin list` in your shell and check that `omp-pulse` is installed and enabled.
+2. Start a new omp TUI process. Let the agent record some assistant or tool progress.
+3. Enter `/pulse` in omp. Its notice names the loaded package version and the current line.
+
+The notice confirms that the command handler loaded. It does not prove that a model request succeeded. Before recorded progress exists, the strip can show `idle` or remain unchanged.
+
 ## Config
 
 Optional file at `~/.omp/agent/omp-pulse/config.json`. Configuration is loaded once when the extension is initialized; there is no config-reload command or file watcher. Recognized environment values take precedence over the file. Blank strings and invalid numeric/boolean environment values fall back to the file/default; malformed or unreadable JSON silently uses defaults.
 
 With no endpoint override, the extension resolves omp's **smol** role (`ctx.models.resolve("@smol")`) and calls `@oh-my-pi/pi-ai`'s `completeSimple`. Credentials come from `ctx.modelRegistry.getApiKey`, with the registry resolver used when available. Missing model/credentials, request failure or unusable output falls back to local extraction; without usable local progress, an in-turn refresh can leave the previous line visible.
 
+Start with the defaults; create the JSON file only when you need different settings. After editing it, fully exit and restart the omp process. Switching sessions or running `/pulse` does not reload this file.
+
+For a new TUI process with the version visible and the native status surface selected:
+
+```sh
+OMP_PULSE_SHOW_VERSION=1 OMP_PULSE_SURFACE=status omp
+```
+
+Those environment values override the file for that process. The example changes the display, not which provider receives summary requests.
+
+Example `config.json`:
 ```json
 {
   "intervalMs": 420000,
@@ -88,6 +109,7 @@ Environment overrides:
 ### Smol
 
 Configure the cheap model on omp itself, under `modelRoles.smol`, with the credentials omp stores for that provider. omp-pulse does not hard-code a model ID or a localhost endpoint. The selected smol provider may be remote or local; this plugin does not enforce local processing. `provider.apiKey` is not used on the smol path.
+See [omp's role settings](https://github.com/can1357/oh-my-pi/blob/main/docs/models.md#role-aliases-and-settings) for setup. `modelRoles.smol` belongs to omp's configuration, not this plugin's JSON file.
 
 A config copied from 0.1.3 that still sets `provider.baseUrl` and `provider.model` opts out of smol. Remove those two keys to use smol again.
 
@@ -112,6 +134,23 @@ Use an OpenAI-compatible base URL such as `https://api.openai.com/v1`. The plugi
 - A local fallback does not mark the transcript as successfully summarized. A later tick can retry unchanged text after a failed or rejected model response.
 - Each completion requests at most 60 output tokens; the preferred painted line is 60 JavaScript string units including `pulse · ` and the optional version. Word trimming and an 80-unit hard fallback are display controls, not Unicode terminal-width or escape-sequence sanitization.
 
+## What the status means
+
+The body is free-form text, not a fixed set of machine states. A local extract or model rewrite can produce it; the strip does not label which route supplied the line.
+
+| Example body after `pulse · ` | Meaning |
+| --- | --- |
+| `idle` | No usable progress line was selected during initialization or an idle fallback. It is not a reliable indication that the agent stopped. |
+| `Reading …`, `Searching …`, `Editing …` | The transcript contains corresponding tool calls or assistant prose. A call can appear before its result; the line does not prove completion. |
+| `Running …` | A recorded action names a command or another tool target. This is not a live process monitor. |
+| `Read the code`, `Reviewed the code`, `Updated the code`, `Ran checks` | The local extract combines recorded action categories. Confirm results in the main transcript, especially for checks and tests. |
+| `Blocked on …` | The latest concrete action in the local extract has an error flag. Inspect its actual result; the label does not establish that the whole task is blocked. |
+| Another short progress sentence | An assistant-derived line or model rewrite summarizes the work. It can be incomplete, stale or wrong. |
+
+With `OMP_PULSE_SHOW_VERSION=1`, the format is `pulse · <version> · <body>`. The version is package metadata, not a health check. It takes space from the body budget.
+
+A missing strip or unchanged line does not prove that work stopped or a provider failed. The [refresh rules](#refresh-behavior) and [known issues](#troubleshooting) explain those cases.
+
 ## Does not join the live turn
 
 omp-pulse never calls `prompt`, `steer`, `followUp`, aside delivery, or `sendUserMessage`. A refresh reads `ctx.sessionManager.getBranch()`, may make a separate summary-model call, and paints the result through the UI. It does not execute commands found in the transcript or give the summary model tool definitions.
@@ -129,6 +168,93 @@ The extension reads its own config and package version, and creates the config p
 Treat the strip as untrusted, advisory text, not evidence that tests passed or an action completed. The plugin does not read terminal/window titles directly, but titles or status text captured in tool results can influence the model. Whitespace/markdown cleanup is not terminal-control sanitization, and a local fallback is not a privacy boundary.
 
 See the [threat model](https://github.com/joshuaswarren/omp-pulse/blob/main/docs/THREAT_MODEL.md) for trust boundaries, residual risks and operator precautions. It lives in the repository; the current npm `files` list does not include `docs/`.
+
+## Troubleshooting
+
+The workarounds below apply to the source-reviewed 0.1.7 behavior. They do not fix the six linked bugs or establish that a later release includes a fix. Check each issue's current state.
+
+### No strip, duplicate lines or ignored settings
+
+1. Check `omp plugin list`. If the installed package is disabled, use `omp plugin enable omp-pulse`, then restart the omp process.
+2. Run `/pulse` after the agent records progress. A fresh session with no usable progress may not produce a summary.
+3. If the widget is missing, try the `OMP_PULSE_SURFACE=status` launch setting above. A host can silently ignore widgets without triggering the fallback.
+4. If the line appears twice, select `widget` or `status` instead of `both`.
+5. If a config edit has no effect, restart the process and check inherited `OMP_PULSE_*` variables. Invalid JSON silently restores defaults.
+
+For a local-looking line that never gets rewritten, check the provider route. A nonempty `provider.baseUrl` suppresses smol even when the URL or model is invalid. To return to smol, remove the override from both the JSON file and the inherited environment. A blank environment value does not erase a file value. Check omp's smol assignment and credentials separately; failures can fall back without a warning in the strip.
+
+### Temporarily disable omp-pulse
+
+Run these commands in your shell, then restart every affected omp process:
+
+```sh
+omp plugin disable omp-pulse
+omp plugin list
+```
+
+Confirm the package is disabled in the affected project. Disabling an installed package does not unload an instance already running. Remove any explicit Pulse startup path too; `-e`/`--extension` or `--hook` can load code independently of the installed package.
+
+For one new process, the host also supports:
+
+```sh
+omp --no-extensions
+```
+
+This skips all ambient extension discovery, not just omp-pulse. Explicit `-e`/`--extension` and `--hook` paths still load, so omit any Pulse path. It does not disable every other discovery subsystem or create a sandbox. See [omp's extension controls](https://github.com/can1357/oh-my-pi/blob/main/docs/extension-loading.md#enabledisable-controls).
+
+When you choose to restore the installed plugin, use `omp plugin enable omp-pulse` and start a new process.
+
+### Terminal text changes appearance or terminal state
+
+Tracked in [#11](https://github.com/joshuaswarren/omp-pulse/issues/11). Filenames, transcript text or model replies can carry terminal controls into the strip.
+
+Disable the plugin and restart before reviewing untrusted content that can contain those controls. Changing `surface`, shortening the transcript or relying on local extraction does not sanitize text. Do not paste a raw control-sequence payload into a live terminal to investigate. The [threat model](https://github.com/joshuaswarren/omp-pulse/blob/main/docs/THREAT_MODEL.md#2-terminal-title-and-display-control-injection) explains this boundary.
+
+### Refreshes stop while the agent still works
+
+Tracked in [#12](https://github.com/joshuaswarren/omp-pulse/issues/12). An older summary can finish after another turn starts and incorrectly mark the shared phase idle.
+
+Use `/pulse` for a manual refresh when the transcript contains progress. For automatic refreshes despite that phase error, start a new process with:
+
+```sh
+OMP_PULSE_IDLE=1 omp
+```
+
+This permits changed-transcript refreshes during real idle periods too, so it can increase provider requests. It bypasses the idle gate; it does not fix the race.
+
+### A previous session's status appears, or the strip returns after shutdown
+
+Tracked in [#13](https://github.com/joshuaswarren/omp-pulse/issues/13). Clearing the timer or switching history does not cancel a pending summary.
+
+For a stale line, let any pending refresh settle, then run `/pulse` against the intended branch. Empty or unusable progress can still leave the previous line visible. There is no plugin command that guarantees cancellation of an in-flight request. When separation matters, disable Pulse and restart omp on the intended session instead of relying on a live switch.
+
+### Headless runs make summary requests without a visible strip
+
+Tracked in [#14](https://github.com/joshuaswarren/omp-pulse/issues/14). The extension does not skip its requests when the host has no usable display.
+
+Disable the installed plugin before starting those jobs, or use `--no-extensions` on the new invocation:
+
+```sh
+omp --no-extensions -p 'your prompt'
+```
+
+As above, this also excludes other ambient extensions; explicit extension paths still load. Display settings and `refreshWhileIdle: false` do not disable turn-end requests. `intervalMs: 0` clamps to one minute rather than turning the timer off.
+
+### Text cuts off in a narrow pane
+
+Tracked in [#15](https://github.com/joshuaswarren/omp-pulse/issues/15). The widget uses a fixed character budget and ignores the render width supplied by the host.
+
+Widen the pane until the full line is visible. The preferred row budget is 60 JavaScript string units, but wide glyphs can require more than 60 terminal columns. There is no configurable row-width limit. `maxTranscriptChars` changes model input size, not the displayed width.
+
+### `/tree` leaves the previous branch's line visible
+
+Tracked in [#16](https://github.com/joshuaswarren/omp-pulse/issues/16). Pulse has no handler for tree navigation, and the default idle setting prevents a timer correction.
+
+Run `/pulse` after navigation when the selected branch contains recorded progress. If that branch has no usable progress, restart omp on the intended session to clear the previous strip. If an older summary remains pending, apply the [session-switch workaround](#a-previous-sessions-status-appears-or-the-strip-returns-after-shutdown) too. A manual refresh does not fix the missing event handler.
+
+### Report a problem
+
+Include the version from `/pulse`, the rendering surface, the terminal and pane width, and the event order. State whether the route uses smol or an override, without including keys. Use synthetic progress text or escaped examples instead of private transcripts and raw terminal controls. Link the matching issue above when the symptom is already known.
 
 ## Develop
 
