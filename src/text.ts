@@ -25,7 +25,9 @@ export function stripTerminalControls(text: string): string {
 const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const EAST_ASIAN_WIDE =
   /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE19\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6\u{20000}-\u{3FFFD}]/u;
-const EMOJI = /\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F/u;
+// A segment carrying VS16 or the keycap mark renders in emoji presentation:
+// two columns even when its base (a digit) is not itself pictographic.
+const EMOJI = /\p{Emoji_Presentation}|\uFE0F|\u20E3/u;
 const ZERO_WIDTH = /^[\p{Mn}\p{Me}\p{Cf}]+$/u;
 
 /** Terminal columns: wide East Asian and emoji graphemes take two, combining marks none. */
