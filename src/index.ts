@@ -37,6 +37,8 @@ export default function ompPulse(pi: PiApi): void {
   const config = loadConfig();
   let host: PulseHost | null = null;
   let phase: Phase = "idle";
+  /** Bumped on every turn_start so a late refresh cannot mark a newer turn idle. */
+  let turn = 0;
   let previousFingerprint = "";
   let timer: unknown;
   let started = false;
@@ -145,14 +147,16 @@ export default function ompPulse(pi: PiApi): void {
 
   pi.on("turn_start", (_event, ctx) => {
     host = ctx;
+    turn += 1;
     phase = "inTurn";
     showExtract("");
   });
 
   pi.on("turn_end", (_event, ctx) => {
     host = ctx;
+    const ended = turn;
     void refresh(false).finally(() => {
-      phase = "idle";
+      if (turn === ended) phase = "idle";
     });
   });
 
