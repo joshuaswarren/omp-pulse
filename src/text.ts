@@ -10,6 +10,18 @@ const CUT_WORDS = new Set([
   "just", "only",
 ]);
 
+// ESC/C1-introduced terminal sequences: CSI, OSC/DCS/SOS/PM/APC strings
+// (BEL- or ST-terminated, or running to the end), and two-byte escapes.
+const TERMINAL_SEQUENCE =
+  /\x1b\[[0-?]*[ -\/]*[@-~]|\x9b[0-?]*[ -\/]*[@-~]|\x1b[\]PX^_][\s\S]*?(?:\x07|\x1b\\|$)|[\x90\x98\x9d\x9e\x9f][\s\S]*?(?:\x07|\x9c|$)|\x1b[ -\/]*[0-~]?/g;
+// Remaining C0 (except whitespace the callers collapse), DEL and C1 controls.
+const CONTROL_CHARS = /[\x00-\x08\x0e-\x1f\x7f-\x9f]/g;
+
+/** Remove content-originated terminal controls. Theme ANSI is added after this. */
+export function stripTerminalControls(text: string): string {
+  return text.replace(TERMINAL_SEQUENCE, "").replace(CONTROL_CHARS, "");
+}
+
 export function oneLine(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= max) return flat;
@@ -25,7 +37,7 @@ export function limitWords(text: string, maxWords: number): string {
 
 /** Drop whole words until the body fits the strip. Never adds an ellipsis. */
 export function fitStripBody(text: string, max: number = PREFERRED_BODY_CHARS): string {
-  const flat = text.replace(/\s+/g, " ").trim();
+  const flat = stripTerminalControls(text).replace(/\s+/g, " ").trim();
   if (!flat) return "";
   if (flat.length <= max && !flat.endsWith("...") && !flat.endsWith("…")) return flat;
   const kept: string[] = [];
