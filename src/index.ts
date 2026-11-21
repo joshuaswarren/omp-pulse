@@ -44,6 +44,8 @@ export default function ompPulse(pi: PiApi): void {
   let queued = false;
   let queuedForce = false;
   let loop: Promise<void> | null = null;
+  /** Bumped on session/history changes and shutdown. In-flight results from an older generation are dropped. */
+  let generation = 0;
   const strip = { showVersion: config.showVersion };
   let lastLine = statusLine("idle", strip);
 
@@ -62,6 +64,12 @@ export default function ompPulse(pi: PiApi): void {
     if (!body || isVagueStatus(body)) return;
     lastLine = statusLine(body, strip);
     paint(host.ui, config, lastLine);
+  }
+
+  function invalidate(): void {
+    generation += 1;
+    queued = false;
+    queuedForce = false;
   }
 
   function refresh(force: boolean): Promise<void> {
@@ -86,6 +94,7 @@ export default function ompPulse(pi: PiApi): void {
       useForce = false;
       queued = false;
       queuedForce = false;
+      const started = generation;
       const result = await runTick({
         phase,
         config,
@@ -94,6 +103,7 @@ export default function ompPulse(pi: PiApi): void {
         force: forced,
         host: host ?? undefined,
       });
+      if (started !== generation) continue;
       if (result.action === "paint" && host) {
         if (result.source === "model") previousFingerprint = result.fingerprint;
         lastLine = result.line;
@@ -125,12 +135,14 @@ export default function ompPulse(pi: PiApi): void {
   }
 
   pi.on("session_start", (_event, ctx) => {
+    invalidate();
     phase = "idle";
     previousFingerprint = "";
     arm(ctx, config);
   });
 
   pi.on("session_switch", (_event, ctx) => {
+    invalidate();
     host = ctx;
     phase = "idle";
     previousFingerprint = "";
@@ -138,6 +150,7 @@ export default function ompPulse(pi: PiApi): void {
   });
 
   pi.on("session_branch", (_event, ctx) => {
+    invalidate();
     host = ctx;
     previousFingerprint = "";
     showExtract(phase === "inTurn" ? "" : "idle");
@@ -157,6 +170,8 @@ export default function ompPulse(pi: PiApi): void {
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    invalidate();
+    host = null;
     if (timer !== undefined && typeof ctx.clearTimer === "function") ctx.clearTimer(timer);
     else if (timer !== undefined) clearInterval(timer as ReturnType<typeof setInterval>);
     timer = undefined;
