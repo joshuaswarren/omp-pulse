@@ -1,5 +1,5 @@
 import type { Placement, Surface } from "./config.ts";
-import { fitStripBody, HARD_LINE_CHARS, PREFERRED_LINE_CHARS, STATUS_PREFIX } from "./text.ts";
+import { fitStripBody, HARD_LINE_CHARS, PREFERRED_LINE_CHARS, STATUS_PREFIX, stripTerminalControls } from "./text.ts";
 import { PULSE_VERSION } from "./version.ts";
 
 export const STATUS_KEY = "omp-pulse";
@@ -52,8 +52,9 @@ export function pulseNotice(line: string): string {
 export function paint(
   ui: ChromeUi,
   config: { surface: Surface; placement: Placement },
-  line: string,
+  rawLine: string,
 ): void {
+  const line = stripTerminalControls(rawLine);
   const showStatus = config.surface === "status" || config.surface === "both";
   const showWidget = config.surface === "widget" || config.surface === "both";
 
