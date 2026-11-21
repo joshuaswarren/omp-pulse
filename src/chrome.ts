@@ -1,5 +1,5 @@
 import type { Placement, Surface } from "./config.ts";
-import { fitStripBody, HARD_LINE_CHARS, PREFERRED_LINE_CHARS, STATUS_PREFIX, stripTerminalControls } from "./text.ts";
+import { displayColumns, fitStripBody, HARD_LINE_CHARS, PREFERRED_LINE_CHARS, STATUS_PREFIX, stripTerminalControls } from "./text.ts";
 import { PULSE_VERSION } from "./version.ts";
 
 export const STATUS_KEY = "omp-pulse";
@@ -12,7 +12,7 @@ export type ChromeUi = {
     content:
       | string[]
       | undefined
-      | ((tui: unknown, theme: { fg?: (token: string, text: string) => string }) => { render: () => string[] }),
+      | ((tui: unknown, theme: { fg?: (token: string, text: string) => string }) => { render: (width?: number) => string[] }),
     options?: { placement?: Placement },
   ): void;
 };
@@ -34,14 +34,30 @@ export function preferredBodyBudget(options?: StripOptions): number {
 export function isTooLongForStrip(body: string, options?: StripOptions): boolean {
   const flat = body.replace(/\s+/g, " ").trim();
   if (!flat || flat.endsWith("...") || flat.endsWith("…")) return true;
-  return `${stripMark(options)}${flat}`.length > PREFERRED_LINE_CHARS;
+  return displayColumns(`${stripMark(options)}${flat}`) > PREFERRED_LINE_CHARS;
 }
 
 export function statusLine(body: string, options?: StripOptions): string {
   const mark = stripMark(options);
   const clean = fitStripBody(body, preferredBodyBudget(options));
   const line = clean ? `${mark}${clean}` : `${mark}idle`;
-  return line.length <= HARD_LINE_CHARS ? line : `${mark}idle`;
+  return displayColumns(line) <= HARD_LINE_CHARS ? line : `${mark}idle`;
+}
+
+/**
+ * Refit a painted line to the widget's terminal width. Keeps the mark and drops whole
+ * trailing words, so a narrow pane never shows a column-cut word. A host that calls
+ * `render()` with no width argument keeps the painted line unchanged.
+ */
+export function fitLineToWidth(line: string, width: number | undefined): string {
+  if (width === undefined || !Number.isFinite(width)) return line;
+  if (displayColumns(line) <= width) return line;
+  const versionMark = stripMark({ showVersion: true });
+  const mark = line.startsWith(versionMark) ? versionMark : line.startsWith(STATUS_PREFIX) ? STATUS_PREFIX : "";
+  const room = width - displayColumns(mark);
+  const body = room > 0 ? fitStripBody(line.slice(mark.length), room) : "";
+  if (body) return `${mark}${body}`;
+  return width >= "pulse".length ? "pulse" : "";
 }
 
 /** `/pulse` notice. Always names the package version, even when the strip hides it. */
@@ -64,7 +80,7 @@ export function paint(
     try {
       ui.setWidget(
         STATUS_KEY,
-        (_tui, theme) => ({ render: () => [themeLine(theme, line)] }),
+        (_tui, theme) => ({ render: (width?: number) => [themeLine(theme, fitLineToWidth(line, width))] }),
         { placement: config.placement },
       );
     } catch {

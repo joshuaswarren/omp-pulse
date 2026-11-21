@@ -22,6 +22,25 @@ export function stripTerminalControls(text: string): string {
   return text.replace(TERMINAL_SEQUENCE, "").replace(CONTROL_CHARS, "");
 }
 
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const EAST_ASIAN_WIDE =
+  /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE19\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6\u{20000}-\u{3FFFD}]/u;
+// A segment carrying VS16 or the keycap mark renders in emoji presentation:
+// two columns even when its base (a digit) is not itself pictographic.
+const EMOJI = /\p{Emoji_Presentation}|\uFE0F|\u20E3/u;
+const ZERO_WIDTH = /^[\p{Mn}\p{Me}\p{Cf}]+$/u;
+
+/** Terminal columns: wide East Asian and emoji graphemes take two, combining marks none. */
+export function displayColumns(text: string): number {
+  if (/^[\x20-\x7e]*$/.test(text)) return text.length;
+  let columns = 0;
+  for (const { segment } of GRAPHEMES.segment(text)) {
+    if (ZERO_WIDTH.test(segment)) continue;
+    columns += EAST_ASIAN_WIDE.test(segment) || EMOJI.test(segment) ? 2 : 1;
+  }
+  return columns;
+}
+
 export function oneLine(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= max) return flat;
@@ -35,16 +54,16 @@ export function limitWords(text: string, maxWords: number): string {
   return words.length <= maxWords ? flat : words.slice(0, maxWords).join(" ");
 }
 
-/** Drop whole words until the body fits the strip. Never adds an ellipsis. */
+/** Drop whole words until the body fits `max` terminal columns. Never adds an ellipsis. */
 export function fitStripBody(text: string, max: number = PREFERRED_BODY_CHARS): string {
   const flat = stripTerminalControls(text).replace(/\s+/g, " ").trim();
   if (!flat) return "";
-  if (flat.length <= max && !flat.endsWith("...") && !flat.endsWith("…")) return flat;
+  if (displayColumns(flat) <= max && !flat.endsWith("...") && !flat.endsWith("…")) return flat;
   const kept: string[] = [];
   for (const word of flat.replace(/(?:\.\.\.|…)\s*$/g, "").split(" ")) {
     if (!word) continue;
     const next = kept.length === 0 ? word : `${kept.join(" ")} ${word}`;
-    if (next.length > max) break;
+    if (displayColumns(next) > max) break;
     kept.push(word);
   }
   while (kept.length > 0) {
@@ -62,7 +81,7 @@ export function fitStripBody(text: string, max: number = PREFERRED_BODY_CHARS): 
     break;
   }
   const line = kept.join(" ");
-  return line.length <= max ? line : "";
+  return displayColumns(line) <= max ? line : "";
 }
 
 export function clipWords(text: string, maxWords: number): string {
