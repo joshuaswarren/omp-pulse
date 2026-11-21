@@ -23,6 +23,7 @@ type PulseEvent =
   | "session_start"
   | "session_switch"
   | "session_branch"
+  | "session_tree"
   | "turn_start"
   | "turn_end"
   | "session_shutdown";
@@ -154,12 +155,15 @@ export default function ompPulse(pi: PiApi): void {
     showExtract("idle");
   });
 
-  pi.on("session_branch", (_event, ctx) => {
+  // A branch (fork) and /tree navigation both move to a different history leaf.
+  const onLeafChange = (_event: unknown, ctx: PulseHost): void => {
     invalidate();
     host = ctx;
     previousFingerprint = "";
     showExtract(phase === "inTurn" ? "" : "idle");
-  });
+  };
+  pi.on("session_branch", onLeafChange);
+  pi.on("session_tree", onLeafChange);
 
   pi.on("turn_start", (_event, ctx) => {
     host = ctx;
