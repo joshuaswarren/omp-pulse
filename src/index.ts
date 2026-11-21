@@ -11,6 +11,8 @@ type PulseUi = ChromeUi & {
 };
 
 type PulseHost = PulseModelHost & {
+  /** `false` in print/JSON modes, where setStatus/setWidget are no-ops. */
+  hasUI?: boolean;
   ui: PulseUi;
   sessionManager?: { getBranch?: () => unknown };
   setInterval?: (fn: () => void, ms: number) => unknown;
@@ -65,7 +67,8 @@ export default function ompPulse(pi: PiApi): void {
   }
 
   function refresh(force: boolean): Promise<void> {
-    if (!host) return Promise.resolve();
+    // No display, no summary request: nothing would ever show it.
+    if (!host || host.hasUI === false) return Promise.resolve();
     if (running && loop) {
       queued = true;
       queuedForce = queuedForce || force;
@@ -104,7 +107,7 @@ export default function ompPulse(pi: PiApi): void {
 
   function arm(ctx: PulseHost, cfg: PulseConfig): void {
     host = ctx;
-    if (started) return;
+    if (started || ctx.hasUI === false) return;
     started = true;
     try {
       mkdirSync(dirname(DEFAULT_CONFIG_PATH), { recursive: true });
